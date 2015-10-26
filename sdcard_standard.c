@@ -1,8 +1,8 @@
 #include <stdint.h>
 
-#include "common/maths.h"
-
 #include "sdcard_standard.h"
+
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
 
 /**
  * Read a bitfield from an array of bits (the bit at index 0 being the most-significant bit of the first byte in
