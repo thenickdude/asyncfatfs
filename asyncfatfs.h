@@ -27,18 +27,37 @@ typedef struct afatfsDirEntryPointer_t {
     uint8_t entryIndex;
 
     bool finished;
-    fatDirectoryEntry_t entry;
 } afatfsDirEntryPointer_t;
+
+typedef void (*afatfsOperationCallback_t)(bool success);
 
 afatfsFilePtr_t afatfs_fopen(const char *filename, const char *mode);
 void afatfs_fclose(afatfsFilePtr_t file);
 int afatfs_fwrite(uint8_t *buffer, int len);
 int afatfs_fread(uint8_t *buffer, int len);
 void afatfs_fseek(int offset, int whence);
+void afatfs_mkdir(const char *name, afatfsOperationCallback_t complete);
+void afatfs_chdir(const char *name);
 
 bool afatfs_flush();
 void afatfs_init();
 void afatfs_destroy();
 void afatfs_poll();
+uint32_t afatfs_getContiguousFreeSpace();
 
 afatfsFilesystemState_e afatfs_getFilesystemState();
+
+
+/*
+
+mkdir("blackbox");
+chdir("blackbox");
+findFirst();
+
+while (entry = findNext()) {
+    // Mark down newest sequence number
+}
+
+fopen("log00001", "wb")
+
+ */

@@ -3,6 +3,28 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#define MBR_PARTITION_TYPE_FAT32     0x0B
+#define MBR_PARTITION_TYPE_FAT32_LBA 0x0C
+
+// Signature bytes found at index 510 and 511 in the volume ID sector
+#define FAT_VOLUME_ID_SIGNATURE_1 0x55
+#define FAT_VOLUME_ID_SIGNATURE_2 0xAA
+
+#define FAT_DIRECTORY_ENTRY_SIZE 32
+#define FAT_SMALLEST_LEGAL_CLUSTER_NUMBER 2
+
+#define FAT12_MAX_CLUSTERS 4084
+#define FAT16_MAX_CLUSTERS 65524
+
+#define FAT_FILE_ATTRIBUTE_READ_ONLY 0x01
+#define FAT_FILE_ATTRIBUTE_HIDDEN    0x02
+#define FAT_FILE_ATTRIBUTE_SYSTEM    0x04
+#define FAT_FILE_ATTRIBUTE_VOLUME_ID 0x08
+#define FAT_FILE_ATTRIBUTE_DIRECTORY 0x10
+#define FAT_FILE_ATTRIBUTE_ARCHIVE   0x20
+
+#define FAT_FILENAME_LENGTH 11
+
 typedef enum {
     FAT_FILESYSTEM_TYPE_INVALID,
     FAT_FILESYSTEM_TYPE_FAT12,
@@ -66,7 +88,7 @@ typedef struct fatVolumeID_t {
 } __attribute__((packed)) fatVolumeID_t;
 
 typedef struct fatDirectoryEntry_t {
-    char filename[11];
+    char filename[FAT_FILENAME_LENGTH];
     uint8_t attrib;
     uint8_t ntReserved;
     uint8_t creationTimeTenths;
@@ -79,26 +101,6 @@ typedef struct fatDirectoryEntry_t {
     uint16_t firstClusterLow;
     uint32_t fileSize;
 } __attribute__((packed)) fatDirectoryEntry_t;
-
-#define MBR_PARTITION_TYPE_FAT32     0x0B
-#define MBR_PARTITION_TYPE_FAT32_LBA 0x0C
-
-// Signature bytes found at index 510 and 511 in the volume ID sector
-#define FAT_VOLUME_ID_SIGNATURE_1 0x55
-#define FAT_VOLUME_ID_SIGNATURE_2 0xAA
-
-#define FAT_DIRECTORY_ENTRY_SIZE 32
-#define FAT_SMALLEST_LEGAL_CLUSTER_NUMBER 2
-
-#define FAT12_MAX_CLUSTERS 4084
-#define FAT16_MAX_CLUSTERS 65524
-
-#define FAT_FILE_ATTRIBUTE_READ_ONLY 0x01
-#define FAT_FILE_ATTRIBUTE_HIDDEN    0x02
-#define FAT_FILE_ATTRIBUTE_SYSTEM    0x04
-#define FAT_FILE_ATTRIBUTE_VOLUME_ID 0x08
-#define FAT_FILE_ATTRIBUTE_DIRECTORY 0x10
-#define FAT_FILE_ATTRIBUTE_ARCHIVE   0x20
 
 uint32_t fat32_decodeClusterNumber(uint32_t clusterNumber);
 

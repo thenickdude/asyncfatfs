@@ -20,17 +20,33 @@ int main(void)
     }
 
     afatfs_init();
+    printf("Filesystem is initting");
 
     while (1) {
         afatfs_poll();
 
-        if (afatfs_getFilesystemState() == AFATFS_FILESYSTEM_STATE_READY) {
-            printf("Filesystem online!\n");
+        afatfsFilesystemState_e state = afatfs_getFilesystemState();
 
+        switch (state) {
+            case AFATFS_FILESYSTEM_STATE_READY:
+                printf("Filesystem online!\n");
+                printf("%u contiguous bytes available for logging\n", afatfs_getContiguousFreeSpace());
+            goto finish;
+            case AFATFS_FILESYSTEM_STATE_FATAL:
+                printf("Fatal error\n");
+                return -1;
+            break;
+            case AFATFS_FILESYSTEM_STATE_INITIALIZATION:
+                printf(".");
+            break;
+            case AFATFS_FILESYSTEM_STATE_UNKNOWN:
+            default:
+                printf("Filesystem in unknown state %d!\n", (int) state);
             break;
         }
     }
 
+    finish:
     printf("Flushing...\n");
 
     while (!afatfs_flush()) {
