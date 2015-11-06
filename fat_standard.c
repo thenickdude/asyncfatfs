@@ -1,3 +1,5 @@
+#include <ctype.h>
+
 #include "fat_standard.h"
 
 bool fat16_isEndOfChainMarker(uint16_t clusterNumber)
@@ -35,4 +37,36 @@ bool fat_isDirectoryEntryTerminator(fatDirectoryEntry_t *entry)
 bool fat_isDirectoryEntryEmpty(fatDirectoryEntry_t *entry)
 {
     return (unsigned char) entry->filename[0] == 0xE5;
+}
+
+/**
+ * Convert the given "prefix.ext" style filename to the FAT format to be stored on disk.
+ *
+ * fatFilename must point to a buffer which is FAT_FILENAME_LENGTH bytes long. The buffer is not null-terminated.
+ */
+void fat_convertFilenameToFATStyle(const char *filename, uint8_t *fatFilename)
+{
+    for (int i = 0; i < 8; i++) {
+        if (*filename == '\0' || *filename == '.') {
+            *fatFilename = ' ';
+        } else {
+            *fatFilename = toupper(*filename);
+            filename++;
+        }
+        fatFilename++;
+    }
+
+    if (*filename == '.') {
+        filename++;
+    }
+
+    for (int i = 0; i < 3; i++) {
+         if (*filename == '\0') {
+             *fatFilename = ' ';
+         } else {
+             *fatFilename = toupper(*filename);
+             filename++;
+         }
+         fatFilename++;
+     }
 }

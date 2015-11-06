@@ -111,3 +111,5 @@ bool fat_isFreeSpace(uint32_t clusterNumber);
 
 bool fat_isDirectoryEntryTerminator(fatDirectoryEntry_t *entry);
 bool fat_isDirectoryEntryEmpty(fatDirectoryEntry_t *entry);
+
+void fat_convertFilenameToFATStyle(const char *filename, uint8_t *fatFilename);
