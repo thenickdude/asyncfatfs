@@ -23,10 +23,16 @@ typedef enum {
 typedef struct afatfsDirEntryPointer_t {
     uint32_t clusterNumber;
     uint16_t sectorNumber;
-    uint8_t entryIndex;
-
-    bool finished;
+    int16_t entryIndex;
 } afatfsDirEntryPointer_t;
+
+typedef afatfsDirEntryPointer_t afatfsFinder_t;
+
+typedef enum {
+    AFATFS_SEEK_SET,
+    AFATFS_SEEK_CUR,
+    AFATFS_SEEK_END,
+} afatfsSeek_e;
 
 typedef void (*afatfsOperationCallback_t)(bool success);
 typedef void (*afatfsFileCallback_t)(afatfsFilePtr_t file);
@@ -34,13 +40,13 @@ typedef void (*afatfsFileCallback_t)(afatfsFilePtr_t file);
 bool afatfs_fopen(const char *filename, const char *mode, afatfsFileCallback_t complete);
 void afatfs_fclose(afatfsFilePtr_t file);
 
-int afatfs_fwrite(afatfsFilePtr_t file, const uint8_t *buffer, uint32_t len);
-void afatfs_fread(afatfsFilePtr_t file, uint8_t *buffer, int len, afatfsOperationCallback_t complete);
+bool afatfs_isEndOfAllocatedFile(afatfsFilePtr_t file);
+uint32_t afatfs_fwrite(afatfsFilePtr_t file, const uint8_t *buffer, uint32_t len);
+uint32_t afatfs_fread(afatfsFilePtr_t file, uint8_t *buffer, uint32_t len);
+afatfsOperationStatus_e afatfs_fseek(afatfsFilePtr_t file, int32_t offset, afatfsSeek_e whence);
 
-void afatfs_fseek(afatfsFilePtr_t file, int offset, int whence);
-
-void afatfs_mkdir(const char *name, afatfsOperationCallback_t complete);
-void afatfs_chdir(const char *name);
+afatfsFilePtr_t afatfs_mkdir(const char *filename, afatfsFileCallback_t complete);
+bool afatfs_chdir(afatfsFilePtr_t dirHandle);
 
 bool afatfs_flush();
 void afatfs_init();
