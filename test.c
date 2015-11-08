@@ -78,7 +78,7 @@ int main(void)
             switch (stage) {
                 case 0:
                     stage = 1;
-                    afatfs_fopen("test.txt", "sb", testFileCreated);
+                    afatfs_fopen("test2.txt", "sb", testFileCreated);
                 break;
                 case 1:
                     // Waiting for file to open...
@@ -94,6 +94,9 @@ int main(void)
 
                         if (afatfs_fwrite(testFile, (uint8_t*) testBuffer, strlen(testBuffer)) > 0) {
                             testWriteCount++;
+                        } else if (afatfs_isFull()) {
+                            //Abort
+                            testWriteCount = testWriteMax;
                         }
                     }
                 break;

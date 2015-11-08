@@ -24,7 +24,6 @@ static struct {
 
 static uint32_t sdcardCapacity;
 static sdcardState_e sdcardState = SDCARD_STATE_NOT_PRESENT;
-static sdcardOperationStatus_e sdcardLastOperationStatus = SDCARD_NO_OPERATION;
 
 bool sdcard_sim_init(const char *filename)
 {
@@ -45,12 +44,12 @@ bool sdcard_sim_init(const char *filename)
 void sdcard_sim_destroy()
 {
     fclose(simFile);
+    sdcardState = SDCARD_STATE_NOT_PRESENT;
 }
 
 bool sdcard_init()
 {
     sdcardState = SDCARD_STATE_READY;
-    sdcardLastOperationStatus = SDCARD_NO_OPERATION;
 
     return true;
 }
@@ -60,14 +59,12 @@ static void sdcard_completeReadBlock()
     fseek(simFile, currentOperation.blockIndex * SDCARD_BLOCK_SIZE, SEEK_SET);
 
     if (fread(currentOperation.buffer, sizeof(uint8_t), SDCARD_BLOCK_SIZE, simFile) == SDCARD_BLOCK_SIZE) {
-        sdcardLastOperationStatus = SDCARD_OPERATION_SUCCESS;
-
         if (currentOperation.callback) {
             currentOperation.callback(SDCARD_BLOCK_OPERATION_READ, currentOperation.blockIndex, currentOperation.buffer, currentOperation.callbackData);
         }
     } else {
-        // Attempt to read beyond EOF
-        sdcardLastOperationStatus = SDCARD_OPERATION_ERROR;
+        fprintf(stderr, "SDCardSim: fread failed on underlying file\n");
+        exit(-1);
     }
 
     sdcardState = SDCARD_STATE_READY;
@@ -78,14 +75,12 @@ static void sdcard_completeWriteBlock()
     fseek(simFile, currentOperation.blockIndex * SDCARD_BLOCK_SIZE, SEEK_SET);
 
     if (fwrite(currentOperation.buffer, sizeof(uint8_t), SDCARD_BLOCK_SIZE, simFile) == SDCARD_BLOCK_SIZE) {
-        sdcardLastOperationStatus = SDCARD_OPERATION_SUCCESS;
-
         if (currentOperation.callback) {
             currentOperation.callback(SDCARD_BLOCK_OPERATION_WRITE, currentOperation.blockIndex, currentOperation.buffer, currentOperation.callbackData);
         }
     } else {
-        // Attempt to write beyond EOF
-        sdcardLastOperationStatus = SDCARD_OPERATION_ERROR;
+        fprintf(stderr, "SDCardSim: fwrite failed on underlying file\n");
+        exit(-1);
     }
 
     sdcardState = SDCARD_STATE_READY;
@@ -96,8 +91,8 @@ bool sdcard_readBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationComp
     if (sdcardState != SDCARD_STATE_READY)
         return false;
 
-    if (blockIndex * 512 >= sdcardCapacity) {
-        fprintf(stderr, "SDCardSim: Attempted to read from %u but capacity is %u\n", blockIndex * 512, sdcardCapacity);
+    if (blockIndex * SDCARD_BLOCK_SIZE >= sdcardCapacity) {
+        fprintf(stderr, "SDCardSim: Attempted to read from %u but capacity is %u\n", blockIndex * SDCARD_BLOCK_SIZE, sdcardCapacity);
         exit(-1);
     }
 
@@ -106,7 +101,6 @@ bool sdcard_readBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationComp
      * this routine returns.
      */
     sdcardState = SDCARD_STATE_READING;
-    sdcardLastOperationStatus = SDCARD_OPERATION_IN_PROGRESS;
 
     currentOperation.buffer = buffer;
     currentOperation.blockIndex = blockIndex;
@@ -121,8 +115,8 @@ bool sdcard_writeBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationCom
     if (sdcardState != SDCARD_STATE_READY)
         return false;
 
-    if (blockIndex * 512 >= sdcardCapacity) {
-        fprintf(stderr, "SDCardSim: Attempted to write to %u but capacity is %u\n", blockIndex * 512, sdcardCapacity);
+    if (blockIndex * SDCARD_BLOCK_SIZE >= sdcardCapacity) {
+        fprintf(stderr, "SDCardSim: Attempted to write to block at %u but capacity is %u\n", blockIndex * SDCARD_BLOCK_SIZE, sdcardCapacity);
         exit(-1);
     }
 
@@ -131,7 +125,6 @@ bool sdcard_writeBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationCom
      * this routine returns.
      */
     sdcardState = SDCARD_STATE_WRITING;
-    sdcardLastOperationStatus = SDCARD_OPERATION_IN_PROGRESS;
 
     currentOperation.buffer = buffer;
     currentOperation.blockIndex = blockIndex;
@@ -158,9 +151,4 @@ void sdcard_poll()
 bool sdcard_isReady()
 {
     return false;
-}
-
-sdcardOperationStatus_e sdcard_getLastOperationStatus()
-{
-    return sdcardLastOperationStatus;
 }

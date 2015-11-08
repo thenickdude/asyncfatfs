@@ -48,5 +48,6 @@ bool afatfs_destroy();
 void afatfs_poll();
 
 uint32_t afatfs_getContiguousFreeSpace();
+bool afatfs_isFull();
 
 afatfsFilesystemState_e afatfs_getFilesystemState();

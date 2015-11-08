@@ -20,13 +20,6 @@ typedef struct sdcard_metadata_t {
 } sdcard_metadata_t;
 
 typedef enum {
-    SDCARD_NO_OPERATION,
-    SDCARD_OPERATION_IN_PROGRESS,
-    SDCARD_OPERATION_SUCCESS,
-    SDCARD_OPERATION_ERROR,
-} sdcardOperationStatus_e;
-
-typedef enum {
     SDCARD_BLOCK_OPERATION_READ,
     SDCARD_BLOCK_OPERATION_WRITE,
     SDCARD_BLOCK_OPERATION_ERASE,
