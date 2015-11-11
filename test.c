@@ -10,9 +10,11 @@
 
 typedef enum {
     TEST_STAGE_INIT = 0,
-    TEST_STAGE_CREATE_DIRECTORY = 0,
+    TEST_STAGE_CREATE_TEST_DIRECTORY = 0,
+    TEST_STAGE_CREATE_LOG_DIRECTORY,
     TEST_STAGE_CREATE_LOG_FILE,
     TEST_STAGE_WRITE_LOG,
+    TEST_STAGE_CLOSE_LOG,
     TEST_STAGE_IDLE,
     TEST_STAGE_COMPLETE
 } testStage_e;
@@ -20,12 +22,16 @@ typedef enum {
 static testStage_e testStage = TEST_STAGE_INIT;
 static afatfsFilePtr_t testFile;
 
-static int testWriteMax = 100000;
+static int testWriteMax = 10000;
 static int testWriteCount = 0;
+static int testLogFileNumber = 0;
 
 void printFSState(afatfsFilesystemState_e state)
 {
     switch (state) {
+       case AFATFS_FILESYSTEM_STATE_UNKNOWN:
+           printf("Filesystem in unknown state\n");
+       break;
        case AFATFS_FILESYSTEM_STATE_READY:
            printf("Filesystem online!\n");
        break;
@@ -36,29 +42,29 @@ void printFSState(afatfsFilesystemState_e state)
        case AFATFS_FILESYSTEM_STATE_INITIALIZATION:
            printf(".");
        break;
-       case AFATFS_FILESYSTEM_STATE_UNKNOWN:
        default:
            printf("Filesystem in unknown state %d!\n", (int) state);
        break;
    }
 }
 
-void testFileCreated(afatfsFilePtr_t file)
+void logFileCreated(afatfsFilePtr_t file)
 {
-    if (!file) {
+    if (file) {
+        testFile = file;
+
+        testStage = TEST_STAGE_WRITE_LOG;
+        fprintf(stderr, "Log file LOG%05d.TXT created\n", testLogFileNumber);
+    } else {
         fprintf(stderr, "Creating testfile failed\n");
-        exit(EXIT_FAILURE);
+        testStage = TEST_STAGE_COMPLETE;
     }
-
-    testFile = file;
-
-    testStage = TEST_STAGE_WRITE_LOG;
 }
 
 void logDirCreated(afatfsFilePtr_t dir)
 {
     if (!dir) {
-        fprintf(stderr, "Creating log directory failed\n");
+        fprintf(stderr, "Creating 'logs' directory failed\n");
         exit(EXIT_FAILURE);
     }
 
@@ -69,12 +75,28 @@ void logDirCreated(afatfsFilePtr_t dir)
     testStage = TEST_STAGE_CREATE_LOG_FILE;
 }
 
+void testDirCreated(afatfsFilePtr_t dir)
+{
+    if (!dir) {
+        fprintf(stderr, "Creating 'test' directory failed\n");
+        exit(EXIT_FAILURE);
+    }
+
+    afatfs_fclose(dir);
+
+    testStage = TEST_STAGE_CREATE_LOG_DIRECTORY;
+}
 
 bool continueTesting() {
-    char testBuffer[32];
+    char testBuffer[64];
 
     switch (testStage) {
-        case TEST_STAGE_CREATE_DIRECTORY:
+        case TEST_STAGE_CREATE_TEST_DIRECTORY:
+            testStage = TEST_STAGE_IDLE;
+
+            afatfs_mkdir("test", testDirCreated);
+        break;
+        case TEST_STAGE_CREATE_LOG_DIRECTORY:
             // Create a subdirectory for logging
 
             /*
@@ -86,26 +108,49 @@ bool continueTesting() {
             afatfs_mkdir("logs", logDirCreated);
         break;
         case TEST_STAGE_CREATE_LOG_FILE:
-            testStage = TEST_STAGE_IDLE;
+            testLogFileNumber++;
 
-            // Write a file in contigous-append mode
-            afatfs_fopen("test.txt", "as", testFileCreated);
+            if (testLogFileNumber >= 1000) {
+                testStage = TEST_STAGE_COMPLETE;
+            } else {
+                char filename[13];
+                testStage = TEST_STAGE_IDLE;
+
+                testWriteCount = 0;
+
+                // Write a file in contigous-append mode
+                sprintf(filename, "LOG%05d.TXT", testLogFileNumber);
+
+                afatfs_fopen(filename, "as", logFileCreated);
+            }
         break;
         case TEST_STAGE_WRITE_LOG:
             if (testWriteCount >= testWriteMax) {
-                // We're okay to close without waiting for the write to complete
-                afatfs_fclose(testFile);
+                testStage = TEST_STAGE_CLOSE_LOG;
+            } else {
+                sprintf(testBuffer, "Log %05d entry %5d/%5d\n", testLogFileNumber, testWriteCount + 1, testWriteMax);
 
+                uint32_t writtenBytes;
+
+                writtenBytes = afatfs_fwrite(testFile, (uint8_t*) testBuffer, strlen(testBuffer));
+
+                if (writtenBytes > 0) {
+                    testWriteCount++;
+                    if (writtenBytes < strlen(testBuffer)) {
+                        // fprintf(stderr, "Write of %u bytes truncated to %u.\n", (unsigned) strlen(testBuffer), (unsigned) writtenBytes);
+                    }
+                } else if (afatfs_isFull()) {
+                    testStage = TEST_STAGE_CLOSE_LOG;
+                }
+            }
+        break;
+        case TEST_STAGE_CLOSE_LOG:
+            // We're okay to close without waiting for the write to complete
+            afatfs_fclose(testFile);
+            if (afatfs_isFull()) {
                 testStage = TEST_STAGE_COMPLETE;
             } else {
-                sprintf(testBuffer, "This is print %6d/%6d\n", testWriteCount + 1, testWriteMax);
-
-                if (afatfs_fwrite(testFile, (uint8_t*) testBuffer, strlen(testBuffer)) > 0) {
-                    testWriteCount++;
-                } else if (afatfs_isFull()) {
-                    //Abort
-                    testWriteCount = testWriteMax;
-                }
+                testStage = TEST_STAGE_CREATE_LOG_FILE;
             }
         break;
         case TEST_STAGE_IDLE:
@@ -141,9 +186,8 @@ int main(void)
         afatfs_poll();
 
         // Report a change in FS state if needed
-        if (state != AFATFS_FILESYSTEM_STATE_READY) {
+        if (afatfs_getFilesystemState() != state) {
             state = afatfs_getFilesystemState();
-
             printFSState(state);
         }
 
