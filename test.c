@@ -15,6 +15,8 @@ typedef enum {
     TEST_STAGE_CREATE_LOG_FILE,
     TEST_STAGE_WRITE_LOG,
     TEST_STAGE_CLOSE_LOG,
+    TEST_STAGE_OPEN_LOG_FOR_READ,
+    TEST_STAGE_READ_LOG,
     TEST_STAGE_IDLE,
     TEST_STAGE_COMPLETE
 } testStage_e;
@@ -48,7 +50,7 @@ void printFSState(afatfsFilesystemState_e state)
    }
 }
 
-void logFileCreated(afatfsFilePtr_t file)
+void logFileCreatedForWrite(afatfsFilePtr_t file)
 {
     if (file) {
         testFile = file;
@@ -87,8 +89,24 @@ void testDirCreated(afatfsFilePtr_t dir)
     testStage = TEST_STAGE_CREATE_LOG_DIRECTORY;
 }
 
+void logFileOpenedForRead(afatfsFilePtr_t file)
+{
+    if (file) {
+        testFile = file;
+
+        testStage = TEST_STAGE_READ_LOG;
+        fprintf(stderr, "Log file LOG%05d.TXT opened for read\n", testLogFileNumber);
+    } else {
+        fprintf(stderr, "Opening log for read failed\n");
+        testStage = TEST_STAGE_COMPLETE;
+    }
+}
+
+
 bool continueTesting() {
     char testBuffer[64];
+    char filename[13];
+    uint32_t readCount;
 
     switch (testStage) {
         case TEST_STAGE_CREATE_TEST_DIRECTORY:
@@ -113,7 +131,6 @@ bool continueTesting() {
             if (testLogFileNumber >= 1000) {
                 testStage = TEST_STAGE_COMPLETE;
             } else {
-                char filename[13];
                 testStage = TEST_STAGE_IDLE;
 
                 testWriteCount = 0;
@@ -121,7 +138,7 @@ bool continueTesting() {
                 // Write a file in contigous-append mode
                 sprintf(filename, "LOG%05d.TXT", testLogFileNumber);
 
-                afatfs_fopen(filename, "as", logFileCreated);
+                afatfs_fopen(filename, "as", logFileCreatedForWrite);
             }
         break;
         case TEST_STAGE_WRITE_LOG:
@@ -148,9 +165,27 @@ bool continueTesting() {
             // We're okay to close without waiting for the write to complete
             afatfs_fclose(testFile);
             if (afatfs_isFull()) {
-                testStage = TEST_STAGE_COMPLETE;
+                testStage = TEST_STAGE_OPEN_LOG_FOR_READ;
             } else {
                 testStage = TEST_STAGE_CREATE_LOG_FILE;
+            }
+        break;
+        case TEST_STAGE_OPEN_LOG_FOR_READ:
+            testStage = TEST_STAGE_IDLE;
+
+            testLogFileNumber = 1;
+            sprintf(filename, "LOG%05d.TXT", testLogFileNumber);
+
+            afatfs_fopen(filename, "r", logFileOpenedForRead);
+        break;
+        case TEST_STAGE_READ_LOG:
+            readCount = afatfs_fread(testFile, (uint8_t*)testBuffer, sizeof(testBuffer));
+
+            if (readCount == 0 && afatfs_feof(testFile)) {
+                afatfs_fclose(testFile);
+                testStage = TEST_STAGE_COMPLETE;
+            } else {
+                printf("%.*s", readCount, testBuffer);
             }
         break;
         case TEST_STAGE_IDLE:

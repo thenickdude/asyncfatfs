@@ -1420,6 +1420,17 @@ static afatfsOperationStatus_e afatfs_appendFreeCluster(afatfsFilePtr_t file)
     return status;
 }
 
+static bool afatfs_isEndOfAllocatedFile(afatfsFilePtr_t file)
+{
+    if (file->type == AFATFS_FILE_TYPE_FAT16_ROOT_DIRECTORY) {
+        return file->cursorOffset >= AFATFS_SECTOR_SIZE * afatfs.rootDirectorySectors;
+    } else {
+        return file->cursorCluster == 0
+            || (afatfs.filesystemType == FAT_FILESYSTEM_TYPE_FAT16 && fat16_isEndOfChainMarker(file->cursorCluster))
+            || (afatfs.filesystemType == FAT_FILESYSTEM_TYPE_FAT32 && fat32_isEndOfChainMarker(file->cursorCluster));
+    }
+}
+
 uint8_t* afatfs_fileGetCursorSectorForRead(afatfsFilePtr_t file)
 {
     uint8_t *result;
@@ -2287,17 +2298,6 @@ uint32_t afatfs_fwrite(afatfsFilePtr_t file, const uint8_t *buffer, uint32_t len
     return writtenBytes;
 }
 
-bool afatfs_isEndOfAllocatedFile(afatfsFilePtr_t file)
-{
-    if (file->type == AFATFS_FILE_TYPE_FAT16_ROOT_DIRECTORY) {
-        return file->cursorOffset >= AFATFS_SECTOR_SIZE * afatfs.rootDirectorySectors;
-    } else {
-        return file->cursorCluster == 0
-            || (afatfs.filesystemType == FAT_FILESYSTEM_TYPE_FAT16 && fat16_isEndOfChainMarker(file->cursorCluster))
-            || (afatfs.filesystemType == FAT_FILESYSTEM_TYPE_FAT32 && fat32_isEndOfChainMarker(file->cursorCluster));
-    }
-}
-
 /**
  * Attempt to read `len` bytes from `file` into the `buffer`.
  *
@@ -2313,62 +2313,52 @@ uint32_t afatfs_fread(afatfsFilePtr_t file, uint8_t *buffer, uint32_t len)
         return 0;
     }
 
-    uint32_t cursorSectorInCluster = afatfs_sectorIndexInCluster(file->cursorOffset);
-    uint32_t cursorOffsetInSector = file->cursorOffset % AFATFS_SECTOR_SIZE;
+    if (afatfs_fileIsBusy(file)) {
+        // There might be a seek pending
+        return 0;
+    }
 
-    afatfsOperationStatus_e status;
+    len = MIN(file->directoryEntry.fileSize - file->cursorOffset, len);
 
     uint32_t readBytes = 0;
+    uint32_t cursorOffsetInSector = file->cursorOffset % AFATFS_SECTOR_SIZE;
 
     while (len > 0) {
-        // Don't read past the end of sector or EOF
-        uint32_t bytesToReadThisSector = MIN(AFATFS_SECTOR_SIZE - cursorOffsetInSector, file->directoryEntry.fileSize - file->cursorOffset);
+        uint32_t bytesToReadThisSector = MIN(AFATFS_SECTOR_SIZE - cursorOffsetInSector, len);
         uint8_t *sectorBuffer;
-        bool readWholeSector = false;
-
-        if (len < bytesToReadThisSector) {
-            bytesToReadThisSector = len;
-        } else {
-            readWholeSector = true;
-        }
 
         sectorBuffer = afatfs_fileGetCursorSectorForRead(file);
         if (!sectorBuffer) {
+            // Cache is currently busy
             return readBytes;
         }
 
         memcpy(buffer, sectorBuffer + cursorOffsetInSector, bytesToReadThisSector);
 
-        file->cursorOffset += bytesToReadThisSector;
         readBytes += bytesToReadThisSector;
+
+        /*
+         * If the seek doesn't complete immediately then we'll break and wait for that seek to complete by waiting for
+         * the file to be non-busy on entry again.
+         *
+         * A seek operation should always be able to queue on the file since we have checked that the file wasn't busy
+         * on entry (fseek will never return AFATFS_OPERATION_FAILURE).
+         */
+        if (afatfs_fseek(file, bytesToReadThisSector, AFATFS_SEEK_CUR) == AFATFS_OPERATION_IN_PROGRESS) {
+            break;
+        }
+
         len -= bytesToReadThisSector;
         buffer += bytesToReadThisSector;
-
-        if (readWholeSector) {
-            // We finished the sector, so advance to the next
-
-            cursorSectorInCluster++;
-            cursorOffsetInSector = 0;
-
-            // Did we finish the cluster?
-            if (cursorSectorInCluster == afatfs.sectorsPerCluster) {
-                file->cursorPreviousCluster = file->cursorCluster;
-
-                status = afatfs_fileGetNextCluster(file, file->cursorPreviousCluster, &file->cursorCluster);
-
-                if (status != AFATFS_OPERATION_SUCCESS) {
-                    /* We need to identify the cluster we advanced the cursorOffset into before we can make our next
-                     * read, so mark it with a flag so we can retry next time: */
-                    file->cursorCluster = 1; //TODO
-                    break;
-                }
-
-                cursorSectorInCluster = 0;
-            }
-        }
+        cursorOffsetInSector = 0;
     }
 
     return readBytes;
+}
+
+bool afatfs_feof(afatfsFilePtr_t file)
+{
+    return file->cursorOffset >= file->directoryEntry.fileSize;
 }
 
 static void afatfs_fileOperationContinue(afatfsFile_t *file)
