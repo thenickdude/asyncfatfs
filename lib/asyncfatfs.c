@@ -642,6 +642,17 @@ uint32_t afatfs_fileGetCursorPhysicalSector(afatfsFilePtr_t file)
     }
 }
 
+void afatfs_fileGetCursorClusterAndSector(afatfsFilePtr_t file, uint32_t *cluster, uint16_t *sector)
+{
+    *cluster = file->cursorCluster;
+
+    if (file->type == AFATFS_FILE_TYPE_FAT16_ROOT_DIRECTORY) {
+        *sector = file->cursorOffset / AFATFS_SECTOR_SIZE;
+    } else {
+        *sector = afatfs_sectorIndexInCluster(file->cursorOffset);
+    }
+}
+
 /**
  * Get a cache entry for the given sector that is suitable for write only (no read!)
  *
@@ -1656,14 +1667,15 @@ afatfsOperationStatus_e afatfs_fseek(afatfsFilePtr_t file, int32_t offset, afatf
 
 /**
  * Attempt to advance the directory pointer `finder` to the next entry in the directory, and if the directory is
- * not finished (marked by the finder being set to finished) the *entry pointer is updated to point inside the cached
- * FAT sector at the position of the fatDirectoryEntry_t. This cache could evaporate soon, so copy the entry away if
- * you need it!
+ * not finished, the *entry pointer is updated to point inside the cached FAT sector at the position of the
+ * fatDirectoryEntry_t. This cache could evaporate soon, so copy the entry away if you need it!
  *
- * Returns AFATFS_OPERATION_SUCCESS on success and loads the next entry's details into the entry.
- * Returns AFATFS_OPERATION_IN_PROGRESS when the disk is busy. The pointer is not advanced, call again later to retry.
+ * Returns:
+ *     AFATFS_OPERATION_SUCCESS -     A pointer to the next directory entry has been loaded into *dirEntry. If the
+ *                                    directory was exhausted then *dirEntry will be set to NULL.
+ *     AFATFS_OPERATION_IN_PROGRESS - The disk is busy. The pointer is not advanced, call again later to retry.
  */
-static afatfsOperationStatus_e afatfs_findNext(afatfsFilePtr_t directory, fatDirectoryEntry_t **dirEntry, afatfsFinder_t *finder)
+afatfsOperationStatus_e afatfs_findNext(afatfsFilePtr_t directory, afatfsFinder_t *finder, fatDirectoryEntry_t **dirEntry)
 {
     uint8_t *sector;
 
@@ -1683,8 +1695,7 @@ static afatfsOperationStatus_e afatfs_findNext(afatfsFilePtr_t directory, fatDir
 
         *dirEntry = (fatDirectoryEntry_t*) sector + finder->entryIndex;
 
-        finder->clusterNumber = directory->cursorCluster;
-        finder->sectorNumber = afatfs_sectorIndexInCluster(directory->cursorOffset);
+        afatfs_fileGetCursorClusterAndSector(directory, &finder->clusterNumber, &finder->sectorNumber);
 
         return AFATFS_OPERATION_SUCCESS;
     } else {
@@ -1702,7 +1713,7 @@ static afatfsOperationStatus_e afatfs_findNext(afatfsFilePtr_t directory, fatDir
  * Initialise the finder so that the first call with the directory to findNext() will return the first file in the
  * directory.
  */
-static void afatfs_findFirst(afatfsFilePtr_t directory, afatfsFinder_t *finder)
+void afatfs_findFirst(afatfsFilePtr_t directory, afatfsFinder_t *finder)
 {
     afatfs_fseek(directory, 0, AFATFS_SEEK_SET);
     finder->entryIndex = -1;
@@ -1769,7 +1780,7 @@ static afatfsOperationStatus_e afatfs_allocateDirectoryEntry(afatfsFilePtr_t dir
         finder->entryIndex = -1;
     }
 
-    while ((result = afatfs_findNext(directory, dirEntry, finder)) == AFATFS_OPERATION_SUCCESS) {
+    while ((result = afatfs_findNext(directory, finder, dirEntry)) == AFATFS_OPERATION_SUCCESS) {
         if (*dirEntry) {
             if (fat_isDirectoryEntryEmpty(*dirEntry) || fat_isDirectoryEntryTerminator(*dirEntry)) {
                 afatfs_cacheSectorMarkDirty((uint8_t*) *dirEntry);
@@ -1907,7 +1918,7 @@ static void afatfs_createFileInternalContinue(afatfsFile_t *file)
         break;
         case AFATFS_CREATEFILE_PHASE_FIND_FILE:
             do {
-                status = afatfs_findNext(&afatfs.currentDirectory, &entry, &file->directoryEntryPos);
+                status = afatfs_findNext(&afatfs.currentDirectory, &file->directoryEntryPos, &entry);
 
                 if (status == AFATFS_OPERATION_SUCCESS) {
                     if (entry == NULL || fat_isDirectoryEntryTerminator(entry)) {
@@ -2000,6 +2011,15 @@ static void afatfs_createFileInternalContinue(afatfsFile_t *file)
 }
 
 /**
+ * Reset the in-memory data for the given handle back to the zeroed initial state
+ */
+static void afatfs_initFileHandle(afatfsFilePtr_t file)
+{
+    memset(file, 0, sizeof(*file));
+    file->lockedCacheIndex = -1;
+}
+
+/**
  * Open (or create) a file in the CWD with the given filename.
  *
  * file             - Memory location to store the newly opened file details
@@ -2014,22 +2034,35 @@ static afatfsFilePtr_t afatfs_createFileInternal(afatfsFilePtr_t file, const cha
 {
     afatfsCreateFileState_t *opState;
 
-    memset(file, 0, sizeof(*file));
-    file->lockedCacheIndex = -1;
+    afatfs_initFileHandle(file);
 
     file->mode = fileMode;
-    file->type = (attrib & FAT_FILE_ATTRIBUTE_DIRECTORY) != 0 ? AFATFS_FILE_TYPE_DIRECTORY : AFATFS_FILE_TYPE_NORMAL;
 
-    file->directoryEntry.attrib = attrib;
-    fat_convertFilenameToFATStyle(name, (uint8_t*)file->directoryEntry.filename);
+    if (strcmp(name, ".") == 0) {
+        memcpy(&file->directoryEntry, &afatfs.currentDirectory.directoryEntry, sizeof(afatfs.currentDirectory.directoryEntry));
+
+        file->type = afatfs.currentDirectory.type;
+    } else {
+        fat_convertFilenameToFATStyle(name, (uint8_t*)file->directoryEntry.filename);
+        file->directoryEntry.attrib = attrib;
+
+        if ((attrib & FAT_FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            file->type = AFATFS_FILE_TYPE_DIRECTORY;
+        } else {
+            file->type = AFATFS_FILE_TYPE_NORMAL;
+        }
+    }
 
     // Queue the operation to finish the file creation
     file->operation.operation = AFATFS_FILE_OPERATION_CREATE_FILE;
-
     opState = &file->operation.state.createFile;
-
-    opState->phase = AFATFS_CREATEFILE_PHASE_INITIAL;
     opState->callback = callback;
+
+    if (strcmp(name, ".") == 0) {
+        opState->phase = AFATFS_CREATEFILE_PHASE_SUCCESS;
+    } else {
+        opState->phase = AFATFS_CREATEFILE_PHASE_INITIAL;
+    }
 
     afatfs_createFileInternalContinue(file);
 
@@ -2098,8 +2131,7 @@ bool afatfs_chdir(afatfsFilePtr_t dirHandle)
             return false;
         }
     } else {
-        memset(&afatfs.currentDirectory, 0, sizeof(afatfs.currentDirectory));
-        afatfs.currentDirectory.lockedCacheIndex = -1;
+        afatfs_initFileHandle(&afatfs.currentDirectory);
 
         afatfs.currentDirectory.mode = AFATFS_FILE_MODE_READ | AFATFS_FILE_MODE_WRITE;
         
@@ -2110,6 +2142,7 @@ bool afatfs_chdir(afatfsFilePtr_t dirHandle)
 
         afatfs.currentDirectory.directoryEntry.firstClusterHigh = afatfs.rootDirectoryCluster >> 16;
         afatfs.currentDirectory.directoryEntry.firstClusterLow = afatfs.rootDirectoryCluster & 0xFFFF;
+        afatfs.currentDirectory.directoryEntry.attrib = FAT_FILE_ATTRIBUTE_DIRECTORY;
 
         afatfs_fseek(&afatfs.currentDirectory, 0, AFATFS_SEEK_SET);
 
@@ -2118,21 +2151,26 @@ bool afatfs_chdir(afatfsFilePtr_t dirHandle)
 }
 
 /**
- * Begin the process of opening a file with the given name and mode, calling the complete() callback when finished.
+ * Begin the process of opening a file with the given name in the current working directory (paths in the filename are
+ * not supported) using the given mode.
+ *
+ * To open the current working directory, pass "." for filename.
+ *
+ * The complete() callback is called when finished with either a file handle (file was opened) or NULL upon failure.
  *
  * Supported file mode strings:
  *
- * r - Read from an existing file TODO
+ * r - Read from an existing file
  * w - Create a file for write access, if the file already exists then erase it TODO
  * a - Create a file for write access to the end of the file only, if the file already exists then append to it
  *
- * r+ - Read and write from an existing file TODO
- * w+ - Read and write from an existing file, if the file doesn't already exist it is created TODO
+ * r+ - Read and write from an existing file
+ * w+ - Read and write from an existing file, if the file doesn't already exist it is created
  * a+ - Read from or append to an existing file, if the file doesn't already exist it is created TODO
  *
  * as - Create a new file which is stored contiguously on disk (high performance mode/freefile) for append or write
- * ws   If the file is already non-empty then a fatal error occurs. If freefile support is not compiled in then it will
- *      fall back to non-contiguous operation.
+ * ws   If the file is already non-empty or freefile support is not compiled in then it will fall back to non-contiguous
+ *      operation.
  *
  * All other mode strings are illegal.
  *

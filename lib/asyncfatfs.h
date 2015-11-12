@@ -48,6 +48,9 @@ afatfsOperationStatus_e afatfs_fseek(afatfsFilePtr_t file, int32_t offset, afatf
 afatfsFilePtr_t afatfs_mkdir(const char *filename, afatfsFileCallback_t complete);
 bool afatfs_chdir(afatfsFilePtr_t dirHandle);
 
+void afatfs_findFirst(afatfsFilePtr_t directory, afatfsFinder_t *finder);
+afatfsOperationStatus_e afatfs_findNext(afatfsFilePtr_t directory, afatfsFinder_t *finder, fatDirectoryEntry_t **dirEntry);
+
 bool afatfs_flush();
 void afatfs_init();
 bool afatfs_destroy();
