@@ -38,7 +38,7 @@ typedef void (*afatfsOperationCallback_t)(bool success);
 typedef void (*afatfsFileCallback_t)(afatfsFilePtr_t file);
 
 bool afatfs_fopen(const char *filename, const char *mode, afatfsFileCallback_t complete);
-void afatfs_fclose(afatfsFilePtr_t file);
+bool afatfs_fclose(afatfsFilePtr_t file);
 
 bool afatfs_feof(afatfsFilePtr_t file);
 uint32_t afatfs_fwrite(afatfsFilePtr_t file, const uint8_t *buffer, uint32_t len);

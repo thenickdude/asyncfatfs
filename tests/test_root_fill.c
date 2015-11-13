@@ -9,7 +9,7 @@
 #include "fat_standard.h"
 #include "asyncfatfs.h"
 
-#define MAX_TEST_FILES 10000
+#define MAX_TEST_FILES 2000
 
 typedef enum {
     TEST_STAGE_INIT = 0,
@@ -80,7 +80,7 @@ bool continueTesting() {
 
             if (status == AFATFS_OPERATION_SUCCESS) {
                 if (dirEntry == NULL) {
-                    if (validateLogFileNumber < testLogFileNumber) {
+                    if (validateLogFileNumber < testLogFileNumber || testLogFileNumber == 0) {
                         /*
                          * The number of files we were told were written correctly is less than the entries we were
                          * able to read back from the root directory!
@@ -92,7 +92,7 @@ bool continueTesting() {
                 } else {
                     sprintf(filenameBuffer, "LOG%05dTXT", validateLogFileNumber);
 
-                    if (memcmp(filenameBuffer, dirEntry->filename, FAT_FILENAME_LENGTH)== 0) {
+                    if (memcmp(filenameBuffer, dirEntry->filename, FAT_FILENAME_LENGTH) == 0) {
                         validateLogFileNumber++;
                     }
                 }
