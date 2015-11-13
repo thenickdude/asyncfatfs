@@ -60,7 +60,7 @@ bool continueTesting() {
     switch (testStage) {
         case TEST_STAGE_CREATE_LOG_FILES:
             if (testLogFileNumber == MAX_TEST_FILES) {
-                testStage = TEST_STAGE_COMPLETE;
+                testStage = TEST_STAGE_OPEN_ROOT;
             } else {
                 testStage = TEST_STAGE_IDLE;
 
@@ -73,7 +73,12 @@ bool continueTesting() {
             // Waiting for file operations...
         break;
         case TEST_STAGE_OPEN_ROOT:
-            afatfs_fopen(".", "r", logDirectoryOpened);
+            if (testLogFileNumber == 0) {
+                fprintf(stderr, "[Fail]     Failed to create any files in the root directory\n");
+                exit(-1);
+            } else {
+                afatfs_fopen(".", "r", logDirectoryOpened);
+            }
         break;
         case TEST_STAGE_VALIDATE_DIRECTORY_CONTENTS:
             status = afatfs_findNext(rootDirectory, &finder, &dirEntry);
@@ -130,13 +135,23 @@ int main(int argc, char **argv)
 
     afatfs_init();
 
-    while (1) {
+    bool keepGoing = true;
+
+    while (keepGoing) {
         afatfs_poll();
 
-        if (afatfs_getFilesystemState() == AFATFS_FILESYSTEM_STATE_READY) {
-            if (!continueTesting()) {
-                break;
-            }
+        switch (afatfs_getFilesystemState()) {
+            case AFATFS_FILESYSTEM_STATE_READY:
+                if (!continueTesting()) {
+                    keepGoing = false;
+                    break;
+                }
+           break;
+           case AFATFS_FILESYSTEM_STATE_FATAL:
+                fprintf(stderr, "[Fail]     Fatal filesystem error\n");
+                exit(-1);
+           default:
+               ;
         }
     }
 

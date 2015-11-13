@@ -750,7 +750,15 @@ static bool afatfs_parseMBR(const uint8_t *sector)
     mbrPartitionEntry_t *partition = (mbrPartitionEntry_t *) (sector + 446);
 
     for (int i = 0; i < 4; i++) {
-        if (partition[i].type == MBR_PARTITION_TYPE_FAT32 || partition[i].type == MBR_PARTITION_TYPE_FAT32_LBA) {
+        if (
+            partition[i].lbaBegin > 0
+            && (
+                partition[i].type == MBR_PARTITION_TYPE_FAT32
+                || partition[i].type == MBR_PARTITION_TYPE_FAT32_LBA
+                || partition[i].type == MBR_PARTITION_TYPE_FAT16
+                || partition[i].type == MBR_PARTITION_TYPE_FAT16_LBA
+            )
+        ) {
             afatfs.partitionStartSector = partition[i].lbaBegin;
 
             return true;
@@ -913,6 +921,9 @@ void afatfs_fileUnlockCacheSector(afatfsFilePtr_t file)
  * Starting from and including the given cluster number, find the number of the first cluster which matches the given
  * condition.
  *
+ * searchLimit - One past the final cluster that should be examined. To search the entire volume, pass:
+ *                   afatfs.numClusters + FAT_SMALLEST_LEGAL_CLUSTER_NUMBER
+ *
  * Condition:
  *     CLUSTER_SEARCH_FREE_SECTOR_AT_BEGINNING_OF_FAT_SECTOR - Find a cluster marked as free in the FAT which lies at the
  *         beginning of its FAT sector. The passed initial search 'cluster' must correspond to the first entry of a FAT sector.
@@ -926,7 +937,7 @@ void afatfs_fileUnlockCacheSector(afatfsFilePtr_t file)
  *     AFATFS_FIND_CLUSTER_NOT_FOUND   - When the entire device was searched without finding a suitable cluster (the
  *                                    *cluster points to just beyond the final cluster).
  */
-static afatfsFindClusterStatus_e afatfs_findClusterWithCondition(afatfsClusterSearchCondition_e condition, uint32_t *cluster)
+static afatfsFindClusterStatus_e afatfs_findClusterWithCondition(afatfsClusterSearchCondition_e condition, uint32_t *cluster, uint32_t searchLimit)
 {
     afatfsFATSector_t sector;
     uint32_t fatSectorIndex, fatSectorEntryIndex;
@@ -954,7 +965,7 @@ static afatfsFindClusterStatus_e afatfs_findClusterWithCondition(afatfsClusterSe
         break;
     }
 
-    while (*cluster < afatfs.numClusters + FAT_SMALLEST_LEGAL_CLUSTER_NUMBER) {
+    while (*cluster < searchLimit) {
 
 #ifdef AFATFS_USE_FREEFILE
         // If we're looking inside the freefile, we won't find any free clusters! Skip it!
@@ -991,10 +1002,10 @@ static afatfsFindClusterStatus_e afatfs_findClusterWithCondition(afatfsClusterSe
                          * The final FAT sector's clusters may not all be valid ones, so we need to check the cluster
                          * number again here
                          */
-                        if (*cluster < afatfs.numClusters + FAT_SMALLEST_LEGAL_CLUSTER_NUMBER) {
+                        if (*cluster < searchLimit) {
                             return AFATFS_FIND_CLUSTER_FOUND;
                         } else {
-                            *cluster = afatfs.numClusters + FAT_SMALLEST_LEGAL_CLUSTER_NUMBER;
+                            *cluster = searchLimit;
                             return AFATFS_FIND_CLUSTER_NOT_FOUND;
                         }
                     }
@@ -1017,7 +1028,7 @@ static afatfsFindClusterStatus_e afatfs_findClusterWithCondition(afatfsClusterSe
     }
 
     // We looked at every available cluster and didn't find one matching the condition
-    *cluster = afatfs.numClusters + FAT_SMALLEST_LEGAL_CLUSTER_NUMBER;
+    *cluster = searchLimit;
     return AFATFS_FIND_CLUSTER_NOT_FOUND;
 }
 
@@ -1180,7 +1191,7 @@ static afatfsOperationStatus_e afatfs_appendRegularFreeClusterContinue(afatfsFil
             goto doMore;
         break;
         case AFATFS_APPEND_FREE_CLUSTER_PHASE_FIND_FREESPACE:
-            switch (afatfs_findClusterWithCondition(CLUSTER_SEARCH_FREE_SECTOR, &opState->searchCluster)) {
+            switch (afatfs_findClusterWithCondition(CLUSTER_SEARCH_FREE_SECTOR, &opState->searchCluster, afatfs.numClusters + FAT_SMALLEST_LEGAL_CLUSTER_NUMBER)) {
                 case AFATFS_FIND_CLUSTER_FOUND:
                     afatfs.lastClusterAllocated = opState->searchCluster;
 
@@ -1347,7 +1358,7 @@ static afatfsOperationStatus_e afatfs_appendSuperclusterContinue(afatfsFile_t *f
              * afatfs_fileGetNextCluster() can tell where a contiguous file ends (at the start of the freefile).
              *
              * Note that normally the freefile can't become empty because it is allocated as a non-integer number
-             * of superclusters.
+             * of superclusters to avoid precisely this situation.
              */
             newFreeFileStartCluster = freeFileStartCluster + afatfs_fatEntriesPerSector();
 
@@ -2084,10 +2095,12 @@ static afatfsFilePtr_t afatfs_createFileInternal(afatfsFilePtr_t file, const cha
 
     // Queue the operation to finish the file creation
     file->operation.operation = AFATFS_FILE_OPERATION_CREATE_FILE;
+
     opState = &file->operation.state.createFile;
     opState->callback = callback;
 
     if (strcmp(name, ".") == 0) {
+        // Since we already have the directory entry details, we can skip straight to the final operations requried
         opState->phase = AFATFS_CREATEFILE_PHASE_SUCCESS;
     } else {
         opState->phase = AFATFS_CREATEFILE_PHASE_INITIAL;
@@ -2132,7 +2145,7 @@ static void afatfs_closeFileContinue(afatfsFilePtr_t file)
  */
 bool afatfs_fclose(afatfsFilePtr_t file)
 {
-    if (file->type == AFATFS_FILE_TYPE_NONE) {
+    if (!file || file->type == AFATFS_FILE_TYPE_NONE) {
         return true;
     } else if (afatfs_fileIsBusy(file)) {
         return false;
@@ -2523,13 +2536,14 @@ static afatfsOperationStatus_e afatfs_findLargestContiguousFreeBlockContinue()
 {
     afatfsFreeSpaceSearchState_t *opState = &afatfs.initState.freeSpaceSearch;
     uint32_t fatEntriesPerSector = afatfs_fatEntriesPerSector();
-    uint32_t candidateGapLength;
+    uint32_t candidateGapLength, searchLimit;
+    afatfsFindClusterStatus_e searchStatus;
 
     while (1) {
         switch (opState->phase) {
             case AFATFS_FREE_SPACE_SEARCH_PHASE_FIND_HOLE:
                 // Find the first free cluster
-                switch (afatfs_findClusterWithCondition(CLUSTER_SEARCH_FREE_SECTOR_AT_BEGINNING_OF_FAT_SECTOR, &opState->candidateStart)) {
+                switch (afatfs_findClusterWithCondition(CLUSTER_SEARCH_FREE_SECTOR_AT_BEGINNING_OF_FAT_SECTOR, &opState->candidateStart, afatfs.numClusters + FAT_SMALLEST_LEGAL_CLUSTER_NUMBER)) {
                     case AFATFS_FIND_CLUSTER_FOUND:
                         opState->candidateEnd = opState->candidateStart + 1;
                         opState->phase = AFATFS_FREE_SPACE_SEARCH_PHASE_GROW_HOLE;
@@ -2549,10 +2563,16 @@ static afatfsOperationStatus_e afatfs_findLargestContiguousFreeBlockContinue()
             break;
             case AFATFS_FREE_SPACE_SEARCH_PHASE_GROW_HOLE:
                 // Find the first used cluster after the beginning of the hole (that signals the end of the hole)
-                switch (afatfs_findClusterWithCondition(CLUSTER_SEARCH_OCCUPIED_SECTOR, &opState->candidateEnd)) {
+
+                // Don't search beyond the end of the volume, or such that the freefile size would exceed the max filesize
+                searchLimit = MIN((uint64_t) opState->candidateStart + FAT_MAXIMUM_FILESIZE / afatfs_clusterSize(), afatfs.numClusters + FAT_SMALLEST_LEGAL_CLUSTER_NUMBER);
+
+                searchStatus = afatfs_findClusterWithCondition(CLUSTER_SEARCH_OCCUPIED_SECTOR, &opState->candidateEnd, searchLimit);
+
+                switch (searchStatus) {
                     case AFATFS_FIND_CLUSTER_NOT_FOUND:
                     case AFATFS_FIND_CLUSTER_FOUND:
-                        // Either we found a used sector, or the search reached the end of the volume
+                        // Either we found a used sector, or the search reached the end of the volume or exceeded the max filesize
                         candidateGapLength = opState->candidateEnd - opState->candidateStart;
 
                         if (candidateGapLength > opState->bestGapLength) {
@@ -2560,9 +2580,14 @@ static afatfsOperationStatus_e afatfs_findLargestContiguousFreeBlockContinue()
                             opState->bestGapLength = candidateGapLength;
                         }
 
-                        // Start a new search for a new hole
-                        opState->candidateStart = roundUpTo(opState->candidateEnd + 1, fatEntriesPerSector);
-                        opState->phase = AFATFS_FREE_SPACE_SEARCH_PHASE_FIND_HOLE;
+                        if (searchStatus == AFATFS_FIND_CLUSTER_NOT_FOUND) {
+                            // This is the best hole there can be
+                            return AFATFS_OPERATION_SUCCESS;
+                        } else {
+                            // Start a new search for a new hole
+                            opState->candidateStart = roundUpTo(opState->candidateEnd + 1, fatEntriesPerSector);
+                            opState->phase = AFATFS_FREE_SPACE_SEARCH_PHASE_FIND_HOLE;
+                        }
                     break;
 
                     case AFATFS_FIND_CLUSTER_FATAL:
@@ -2657,6 +2682,8 @@ static void afatfs_initContinue()
                         uint32_t startCluster = afatfs.initState.freeSpaceSearch.bestGapStart;
                         // Points 1-beyond the final cluster of the freefile:
                         uint32_t endCluster = afatfs.initState.freeSpaceSearch.bestGapStart + afatfs.initState.freeSpaceSearch.bestGapLength;
+
+                        afatfs_assert(endCluster < afatfs.numClusters + FAT_SMALLEST_LEGAL_CLUSTER_NUMBER);
 
                         afatfs.initState.freeSpaceFAT.startCluster = startCluster;
                         afatfs.initState.freeSpaceFAT.endCluster = endCluster;

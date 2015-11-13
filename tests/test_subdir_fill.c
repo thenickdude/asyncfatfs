@@ -154,13 +154,23 @@ int main(int argc, char **argv)
 
     afatfs_init();
 
-    while (1) {
+    bool keepGoing = true;
+
+    while (keepGoing) {
         afatfs_poll();
 
-        if (afatfs_getFilesystemState() == AFATFS_FILESYSTEM_STATE_READY) {
-            if (!continueTesting()) {
-                break;
-            }
+        switch (afatfs_getFilesystemState()) {
+            case AFATFS_FILESYSTEM_STATE_READY:
+                if (!continueTesting()) {
+                    keepGoing = false;
+                    break;
+                }
+           break;
+           case AFATFS_FILESYSTEM_STATE_FATAL:
+                fprintf(stderr, "[Fail]     Fatal filesystem error\n");
+                exit(-1);
+           default:
+               ;
         }
     }
 

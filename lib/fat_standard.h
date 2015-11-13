@@ -3,8 +3,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#define MBR_PARTITION_TYPE_FAT16     0x06
 #define MBR_PARTITION_TYPE_FAT32     0x0B
 #define MBR_PARTITION_TYPE_FAT32_LBA 0x0C
+#define MBR_PARTITION_TYPE_FAT16_LBA 0x0E
 
 // Signature bytes found at index 510 and 511 in the volume ID sector
 #define FAT_VOLUME_ID_SIGNATURE_1 0x55
@@ -12,6 +14,8 @@
 
 #define FAT_DIRECTORY_ENTRY_SIZE 32
 #define FAT_SMALLEST_LEGAL_CLUSTER_NUMBER 2
+
+#define FAT_MAXIMUM_FILESIZE 0xFFFFFFFF
 
 #define FAT12_MAX_CLUSTERS 4084
 #define FAT16_MAX_CLUSTERS 65524

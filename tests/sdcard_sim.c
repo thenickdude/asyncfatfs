@@ -1,6 +1,9 @@
+#define _FILE_OFFSET_BITS 64
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <inttypes.h>
 
 #include "sdcard_sim.h"
 #include "sdcard_standard.h"
@@ -22,7 +25,7 @@ static struct {
     uint32_t blockIndex;
 } currentOperation;
 
-static uint32_t sdcardCapacity;
+static uint64_t sdcardCapacity;
 static sdcardState_e sdcardState = SDCARD_STATE_NOT_PRESENT;
 
 bool sdcard_sim_init(const char *filename)
@@ -34,7 +37,7 @@ bool sdcard_sim_init(const char *filename)
     }
 
     fseek(simFile, 0, SEEK_END);
-    sdcardCapacity = ftell(simFile);
+    sdcardCapacity = ftello(simFile);
 
     fseek(simFile, 0, SEEK_SET);
 
@@ -56,7 +59,9 @@ bool sdcard_init()
 
 static void sdcard_completeReadBlock()
 {
-    fseek(simFile, currentOperation.blockIndex * SDCARD_BLOCK_SIZE, SEEK_SET);
+    uint64_t byteIndex = (uint64_t) currentOperation.blockIndex * SDCARD_BLOCK_SIZE;
+
+    fseeko(simFile, byteIndex, SEEK_SET);
 
     if (fread(currentOperation.buffer, sizeof(uint8_t), SDCARD_BLOCK_SIZE, simFile) == SDCARD_BLOCK_SIZE) {
         if (currentOperation.callback) {
@@ -72,7 +77,9 @@ static void sdcard_completeReadBlock()
 
 static void sdcard_completeWriteBlock()
 {
-    fseek(simFile, currentOperation.blockIndex * SDCARD_BLOCK_SIZE, SEEK_SET);
+    uint64_t byteIndex = (uint64_t) currentOperation.blockIndex * SDCARD_BLOCK_SIZE;
+
+    fseeko(simFile, byteIndex, SEEK_SET);
 
     if (fwrite(currentOperation.buffer, sizeof(uint8_t), SDCARD_BLOCK_SIZE, simFile) == SDCARD_BLOCK_SIZE) {
         if (currentOperation.callback) {
@@ -88,11 +95,13 @@ static void sdcard_completeWriteBlock()
 
 bool sdcard_readBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationCompleteCallback_c callback, uint32_t callbackData)
 {
+    uint64_t byteIndex = (uint64_t) blockIndex * SDCARD_BLOCK_SIZE;
+
     if (sdcardState != SDCARD_STATE_READY)
         return false;
 
-    if (blockIndex * SDCARD_BLOCK_SIZE >= sdcardCapacity) {
-        fprintf(stderr, "SDCardSim: Attempted to read from %u but capacity is %u\n", blockIndex * SDCARD_BLOCK_SIZE, sdcardCapacity);
+    if (byteIndex >= sdcardCapacity) {
+        fprintf(stderr, "SDCardSim: Attempted to read from %" PRIu64 " but capacity is %" PRIu64 "\n", byteIndex, sdcardCapacity);
         exit(-1);
     }
 
@@ -112,11 +121,13 @@ bool sdcard_readBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationComp
 
 bool sdcard_writeBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationCompleteCallback_c callback, uint32_t callbackData)
 {
+    uint64_t byteIndex = (uint64_t) blockIndex * SDCARD_BLOCK_SIZE;
+
     if (sdcardState != SDCARD_STATE_READY)
         return false;
 
     if (blockIndex * SDCARD_BLOCK_SIZE >= sdcardCapacity) {
-        fprintf(stderr, "SDCardSim: Attempted to write to block at %u but capacity is %u\n", blockIndex * SDCARD_BLOCK_SIZE, sdcardCapacity);
+        fprintf(stderr, "SDCardSim: Attempted to write to block at %" PRIu64 " but capacity is %" PRIu64 "\n", byteIndex, sdcardCapacity);
         exit(-1);
     }
 

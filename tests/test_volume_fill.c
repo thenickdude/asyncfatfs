@@ -8,6 +8,7 @@
 #include "sdcard_standard.h"
 #include "asyncfatfs.h"
 
+// Attempt to write a little over 2GB of log entries per file
 #define LOG_ENTRY_WRITE_MAX 100000000
 
 typedef enum {
@@ -37,35 +38,12 @@ static uint32_t readBytesThisFile = 0;
 static uint32_t writtenBytesTotal = 0;
 static uint32_t readBytesTotal = 0;
 
-void printFSState(afatfsFilesystemState_e state)
-{
-    switch (state) {
-       case AFATFS_FILESYSTEM_STATE_UNKNOWN:
-           printf("Filesystem in unknown state\n");
-       break;
-       case AFATFS_FILESYSTEM_STATE_READY:
-           printf("Filesystem online!\n");
-       break;
-       case AFATFS_FILESYSTEM_STATE_FATAL:
-           printf("Fatal error\n");
-           exit(-1);
-       break;
-       case AFATFS_FILESYSTEM_STATE_INITIALIZATION:
-           printf(".");
-       break;
-       default:
-           printf("Filesystem in unknown state %d!\n", (int) state);
-       break;
-   }
-}
-
 void logFileCreatedForWrite(afatfsFilePtr_t file)
 {
     if (file) {
         testFile = file;
 
         testStage = TEST_STAGE_WRITE_LOG;
-        fprintf(stderr, "Writing log entries to LOG%05d.TXT...\n", writeLogFileNumber);
     } else {
         fprintf(stderr, "Creating testfile failed\n");
         testStage = TEST_STAGE_COMPLETE;
@@ -92,7 +70,6 @@ void logFileOpenedForRead(afatfsFilePtr_t file)
         testFile = file;
 
         testStage = TEST_STAGE_READ_LOG;
-        fprintf(stderr, "Validating LOG%05d.TXT...\n", readLogFileNumber);
     } else {
         fprintf(stderr, "Opening log for read failed\n");
         testStage = TEST_STAGE_COMPLETE;
@@ -172,6 +149,7 @@ bool continueTesting() {
                 testStage = TEST_STAGE_IDLE;
 
                 readLogEntryCount = 0;
+                readBytesThisFile = 0;
 
                 sprintf(filename, "LOG%05d.TXT", readLogFileNumber);
 
