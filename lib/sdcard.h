@@ -17,7 +17,7 @@ typedef struct sdcard_metadata_t {
     uint8_t productionMonth;
 
     uint32_t numBlocks; /* Card capacity in 512-byte blocks*/
-} sdcard_metadata_t;
+} sdcardMetadata_t;
 
 typedef enum {
     SDCARD_BLOCK_OPERATION_READ,
@@ -29,6 +29,6 @@ typedef void(*sdcard_operationCompleteCallback_c)(sdcardBlockOperation_e operati
 
 bool sdcard_init();
 bool sdcard_readBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationCompleteCallback_c callback, uint32_t callbackData);
-bool sdcard_writeBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationCompleteCallback_c callback, uint32_t callbackData);
+bool sdcard_writeBlock(uint32_t blockIndex, uint8_t *buffer);
 void sdcard_poll();
 

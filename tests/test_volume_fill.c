@@ -5,7 +5,6 @@
 
 #include "sdcard_sim.h"
 #include "sdcard.h"
-#include "sdcard_standard.h"
 #include "asyncfatfs.h"
 
 // Attempt to write a little over 2GB of log entries per file

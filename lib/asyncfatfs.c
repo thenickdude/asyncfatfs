@@ -17,9 +17,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Remove these two includes (only for debugging):
+#ifdef AFATFS_DEBUG
 #include <signal.h>
 #include <stdio.h>
+#endif
 
 #include "asyncfatfs.h"
 
@@ -81,8 +82,7 @@ typedef enum {
     AFATFS_CACHE_STATE_EMPTY,
     AFATFS_CACHE_STATE_READING,
     AFATFS_CACHE_STATE_IN_SYNC,
-    AFATFS_CACHE_STATE_DIRTY,
-    AFATFS_CACHE_STATE_WRITING
+    AFATFS_CACHE_STATE_DIRTY
 } afatfsCacheBlockState_e;
 
 typedef enum {
@@ -147,37 +147,37 @@ typedef struct afatfsCacheBlockDescriptor_t {
     unsigned discardable:1;
 } afatfsCacheBlockDescriptor_t;
 
+typedef void (*afatfsCallback_t)();
+
 typedef enum {
     AFATFS_FREE_SPACE_SEARCH_PHASE_FIND_HOLE,
     AFATFS_FREE_SPACE_SEARCH_PHASE_GROW_HOLE
 } afatfsFreeSpaceSearchPhase_e;
 
-typedef struct afatfsFreeSpaceSearchState_t {
+typedef struct afatfsFreeSpaceSearch_t {
     uint32_t candidateStart;
     uint32_t candidateEnd;
     uint32_t bestGapStart;
     uint32_t bestGapLength;
     afatfsFreeSpaceSearchPhase_e phase;
-} afatfsFreeSpaceSearchState_t;
+} afatfsFreeSpaceSearch_t;
 
-typedef struct afatfsFreeSpaceFATState_t {
+typedef struct afatfsFreeSpaceFAT_t {
     uint32_t startCluster;
     uint32_t endCluster;
-} afatfsFreeSpaceFATState_t;
+} afatfsFreeSpaceFAT_t;
 
-typedef void (*afatfsCallback_t)();
-
-typedef struct afatfsCreateFileState_t {
+typedef struct afatfsCreateFile_t {
     afatfsFileCallback_t callback;
 
     uint8_t phase;
-} afatfsCreateFileState_t;
+} afatfsCreateFile_t;
 
-typedef struct afatfsSeekState_t {
+typedef struct afatfsSeek_t {
     afatfsFileCallback_t callback;
 
     uint32_t seekOffset;
-} afatfsSeekState_t;
+} afatfsSeek_t;
 
 typedef enum {
     AFATFS_APPEND_SUPERCLUSTER_PHASE_INIT = 0,
@@ -186,12 +186,12 @@ typedef enum {
     AFATFS_APPEND_SUPERCLUSTER_PHASE_UPDATE_FILE_DIRECTORY,
 } afatfsAppendSuperclusterPhase_e;
 
-typedef struct afatfsAppendSuperclusterState_t {
+typedef struct afatfsAppendSupercluster_t {
     afatfsAppendSuperclusterPhase_e phase;
     uint32_t previousCluster;
     uint32_t fatRewriteStartCluster;
     uint32_t fatRewriteEndCluster;
-} afatfsAppendSuperclusterState_t;
+} afatfsAppendSupercluster_t;
 
 typedef enum {
     AFATFS_APPEND_FREE_CLUSTER_PHASE_INIT = 0,
@@ -203,11 +203,11 @@ typedef enum {
     AFATFS_APPEND_FREE_CLUSTER_PHASE_FAILURE,
 } afatfsAppendFreeClusterPhase_e;
 
-typedef struct afatfsAppendFreeClusterState_t {
+typedef struct afatfsAppendFreeCluster_t {
     afatfsAppendFreeClusterPhase_e phase;
     uint32_t previousCluster;
     uint32_t searchCluster;
-} afatfsAppendFreeClusterState_t;
+} afatfsAppendFreeCluster_t;
 
 typedef enum {
     AFATFS_INIT_SUBDIRECTORY_PHASE_INITIAL = 0,
@@ -219,44 +219,74 @@ typedef enum {
 
 typedef struct afatfsInitSubdirectoryState_t {
     // We need to call this as a sub-operation so we have it as our first member to be compatible with its memory layout:
-    afatfsAppendFreeClusterState_t appendFreeCluster;
+    afatfsAppendFreeCluster_t appendFreeCluster;
 
     afatfsInitSubdirectoryPhase_e phase;
     uint32_t parentDirectoryCluster;
     afatfsFileCallback_t callback;
-} afatfsInitSubdirectoryState_t;
+} afatfsInitSubdirectory_t;
 
-typedef struct afatfsExtendDirectoryState_t {
+typedef struct afatfsExtendDirectory_t {
     // We need to call this as a sub-operation so we have it as our first member to be compatible with its memory layout:
-    afatfsAppendFreeClusterState_t appendFreeCluster;
+    afatfsAppendFreeCluster_t appendFreeCluster;
 
     int sectorIndex;
     uint32_t previousCluster;
-} afatfsExtendDirectoryState_t;
+} afatfsExtendDirectory_t;
+
+typedef enum {
+    AFATFS_TRUNCATE_FILE_INITIAL = 0,
+    AFATFS_TRUNCATE_FILE_UPDATE_DIRECTORY = 0,
+    AFATFS_TRUNCATE_FILE_ERASE_FAT_CHAIN_NORMAL,
+    AFATFS_TRUNCATE_FILE_ERASE_FAT_CHAIN_CONTIGUOUS,
+    AFATFS_TRUNCATE_FILE_PREPEND_TO_FREEFILE,
+    AFATFS_TRUNCATE_FILE_SUCCESS,
+} afatfsTruncateFilePhase_e;
+
+typedef struct afatfsTruncateFile_t {
+    uint32_t startCluster; // First cluster to erase
+    uint32_t endCluster; // Optional, for contiguous files set to 1 past the end cluster of the file, otherwise set to 0
+    afatfsFileCallback_t callback;
+    afatfsTruncateFilePhase_e phase;
+} afatfsTruncateFile_t;
+
+typedef enum {
+    AFATFS_DELETE_FILE_ERASE_DIRECTORY_ENTRY,
+    AFATFS_DELETE_FILE_ERASE_FAT,
+} afatfsDeleteFilePhase_e;
+
+typedef struct afatfsDeleteFile_t {
+    afatfsTruncateFile_t truncateFile;
+    afatfsDeleteFilePhase_e phase;
+} afatfsUnlinkFile_t;
 
 typedef enum {
     AFATFS_FILE_OPERATION_NONE,
     AFATFS_FILE_OPERATION_CREATE_FILE,
     AFATFS_FILE_OPERATION_SEEK, // Seek the file's cursorCluster forwards by seekOffset bytes
     AFATFS_FILE_OPERATION_CLOSE,
+    AFATFS_FILE_OPERATION_TRUNCATE,
+    AFATFS_FILE_OPERATION_UNLINK,
 #ifdef AFATFS_USE_FREEFILE
     AFATFS_FILE_OPERATION_APPEND_SUPERCLUSTER,
 #endif
     AFATFS_FILE_OPERATION_APPEND_FREE_CLUSTER,
     AFATFS_FILE_OPERATION_FIND_NEXT,
     AFATFS_FILE_OPERATION_INIT_SUBDIRECTORY,
-    AFATFS_FILE_OPERATION_EXTEND_DIRECTORY
+    AFATFS_FILE_OPERATION_EXTEND_DIRECTORY,
 } afatfsFileOperation_e;
 
 typedef struct afatfsOperation_t {
     afatfsFileOperation_e operation;
     union {
-        afatfsCreateFileState_t createFile;
-        afatfsSeekState_t seek;
-        afatfsAppendSuperclusterState_t appendSupercluster;
-        afatfsAppendFreeClusterState_t appendFreeCluster;
-        afatfsInitSubdirectoryState_t initSubdirectory;
-        afatfsExtendDirectoryState_t extendDirectory;
+        afatfsCreateFile_t createFile;
+        afatfsSeek_t seek;
+        afatfsAppendSupercluster_t appendSupercluster;
+        afatfsAppendFreeCluster_t appendFreeCluster;
+        afatfsInitSubdirectory_t initSubdirectory;
+        afatfsExtendDirectory_t extendDirectory;
+        afatfsUnlinkFile_t unlinkFile;
+        afatfsTruncateFile_t truncateFile;
     } state;
 } afatfsFileOperation_t;
 
@@ -300,8 +330,8 @@ typedef struct afatfs_t {
     // State used during FS initialisation where only one member of the union is used at a time
 #ifdef AFATFS_USE_FREEFILE
     union {
-        afatfsFreeSpaceSearchState_t freeSpaceSearch;
-        afatfsFreeSpaceFATState_t freeSpaceFAT;
+        afatfsFreeSpaceSearch_t freeSpaceSearch;
+        afatfsFreeSpaceFAT_t freeSpaceFAT;
     } initState;
 #endif
 
@@ -347,12 +377,17 @@ typedef struct afatfs_t {
     uint32_t rootDirectorySectors; // Zero on FAT32, for FAT16 the number of sectors that the root directory occupies
 } afatfs_t;
 
+typedef enum {
+    AFATFS_FAT_PATTERN_UNTERMINATED_CHAIN,
+    AFATFS_FAT_PATTERN_TERMINATED_CHAIN,
+    AFATFS_FAT_PATTERN_FREE
+} afatfsFATPattern_e;
+
 static afatfs_t afatfs;
 
 static void afatfs_fileOperationContinue(afatfsFile_t *file);
-
-uint8_t* afatfs_fileLockCursorSectorForWrite(afatfsFilePtr_t file);
-uint8_t* afatfs_fileGetCursorSectorForRead(afatfsFilePtr_t file);
+static uint8_t* afatfs_fileLockCursorSectorForWrite(afatfsFilePtr_t file);
+static uint8_t* afatfs_fileGetCursorSectorForRead(afatfsFilePtr_t file);
 
 static uint32_t roundUpTo(uint32_t value, uint32_t rounding)
 {
@@ -374,7 +409,9 @@ static bool afatfs_assert(bool condition)
 {
     if (!condition) {
         afatfs.filesystemState = AFATFS_FILESYSTEM_STATE_FATAL;
+#ifdef AFATFS_DEBUG
         raise(SIGTRAP);
+#endif
     }
 
     return condition;
@@ -466,6 +503,23 @@ static void afatfs_cacheSectorInit(afatfsCacheBlockDescriptor_t *descriptor, uin
     descriptor->state = AFATFS_CACHE_STATE_EMPTY;
 }
 
+/**
+ * Attempt to flush the dirty cache entry with the given index to the SDcard. Returns true if the SDcard accepted
+ * the write, false if the card was busy.
+ */
+static bool afatfs_cacheFlushSector(int cacheIndex)
+{
+    if (afatfs.cacheDescriptor[cacheIndex].state != AFATFS_CACHE_STATE_DIRTY)
+        return true; // Already flushed
+
+    if (sdcard_writeBlock(afatfs.cacheDescriptor[cacheIndex].sectorIndex, afatfs_cacheSectorGetMemory(cacheIndex))) {
+        afatfs.cacheDescriptor[cacheIndex].state = AFATFS_CACHE_STATE_IN_SYNC;
+        afatfs.cacheDirtyEntries--;
+        return true;
+    }
+    return false;
+}
+
 static void afatfs_sdcardReadComplete(sdcardBlockOperation_e operation, uint32_t sectorIndex, uint8_t *buffer, uint32_t callbackData)
 {
     (void) operation;
@@ -476,26 +530,6 @@ static void afatfs_sdcardReadComplete(sdcardBlockOperation_e operation, uint32_t
             && afatfs.cacheDescriptor[i].sectorIndex == sectorIndex
         ) {
             afatfs_assert(afatfs_cacheSectorGetMemory(i) == buffer && afatfs.cacheDescriptor[i].state == AFATFS_CACHE_STATE_READING);
-
-            afatfs.cacheDescriptor[i].state = AFATFS_CACHE_STATE_IN_SYNC;
-            break;
-        }
-    }
-}
-
-static void afatfs_sdcardWriteComplete(sdcardBlockOperation_e operation, uint32_t sectorIndex, uint8_t *buffer, uint32_t callbackData)
-{
-    (void) operation;
-    (void) callbackData;
-
-    for (int i = 0; i < AFATFS_NUM_CACHE_SECTORS; i++) {
-        /* Keep in mind that someone may have marked the sector as dirty after writing had already begun. In this case we must leave
-         * it marked as dirty because those modifications may have been made too late to make it to the disk!
-         */
-        if (afatfs.cacheDescriptor[i].state == AFATFS_CACHE_STATE_WRITING
-            && afatfs.cacheDescriptor[i].sectorIndex == sectorIndex
-        ) {
-            afatfs_assert(afatfs_cacheSectorGetMemory(i) == buffer);
 
             afatfs.cacheDescriptor[i].state = AFATFS_CACHE_STATE_IN_SYNC;
             break;
@@ -607,10 +641,8 @@ bool afatfs_flush()
     if (afatfs.cacheDirtyEntries > 0) {
         for (int i = 0; i < AFATFS_NUM_CACHE_SECTORS; i++) {
             if (afatfs.cacheDescriptor[i].state == AFATFS_CACHE_STATE_DIRTY && !afatfs.cacheDescriptor[i].locked) {
-                if (sdcard_writeBlock(afatfs.cacheDescriptor[i].sectorIndex, afatfs_cacheSectorGetMemory(i), afatfs_sdcardWriteComplete, 0)) {
-                    afatfs.cacheDescriptor[i].state = AFATFS_CACHE_STATE_WRITING;
-                    afatfs.cacheDirtyEntries--;
-                }
+                afatfs_cacheFlushSector(i);
+
                 return false;
             }
         }
@@ -648,7 +680,7 @@ static uint32_t afatfs_directorySectorToPhysical(uint32_t clusterNumber, uint32_
     }
 }
 
-uint32_t afatfs_fileGetCursorPhysicalSector(afatfsFilePtr_t file)
+static uint32_t afatfs_fileGetCursorPhysicalSector(afatfsFilePtr_t file)
 {
     if (file->type == AFATFS_FILE_TYPE_FAT16_ROOT_DIRECTORY) {
         return afatfs.fatStartSector + AFATFS_NUM_FATS * afatfs.fatSectors + file->cursorOffset / AFATFS_SECTOR_SIZE;
@@ -658,7 +690,7 @@ uint32_t afatfs_fileGetCursorPhysicalSector(afatfsFilePtr_t file)
     }
 }
 
-void afatfs_fileGetCursorClusterAndSector(afatfsFilePtr_t file, uint32_t *cluster, uint16_t *sector)
+static void afatfs_fileGetCursorClusterAndSector(afatfsFilePtr_t file, uint32_t *cluster, uint16_t *sector)
 {
     *cluster = file->cursorCluster;
 
@@ -707,7 +739,6 @@ void afatfs_fileGetCursorClusterAndSector(afatfsFilePtr_t file, uint32_t *cluste
 
             // Fall through
 
-        case AFATFS_CACHE_STATE_WRITING:
         case AFATFS_CACHE_STATE_IN_SYNC:
             if ((sectorFlags & AFATFS_CACHE_WRITE) != 0) {
                 afatfs.cacheDescriptor[cacheSectorIndex].state = AFATFS_CACHE_STATE_DIRTY;
@@ -898,7 +929,6 @@ static afatfsOperationStatus_e afatfs_FATSetNextCluster(uint32_t startCluster, u
     result = afatfs_cacheSector(fatPhysicalSector, &sector.bytes, AFATFS_CACHE_READ | AFATFS_CACHE_WRITE);
 
     if (result == AFATFS_OPERATION_SUCCESS) {
-        //fprintf(stderr, "FAT: %08x -> %08x\n", startCluster, nextCluster);
         if (afatfs.filesystemType == FAT_FILESYSTEM_TYPE_FAT16) {
             sector.fat16[fatSectorEntryIndex] = nextCluster;
         } else {
@@ -909,7 +939,7 @@ static afatfsOperationStatus_e afatfs_FATSetNextCluster(uint32_t startCluster, u
     return result;
 }
 
-void afatfs_fileUnlockCacheSector(afatfsFilePtr_t file)
+static void afatfs_fileUnlockCacheSector(afatfsFilePtr_t file)
 {
     if (file->lockedCacheIndex != -1) {
         afatfs.cacheDescriptor[file->lockedCacheIndex].locked = 0;
@@ -1058,69 +1088,84 @@ static afatfsOperationStatus_e afatfs_fileGetNextCluster(afatfsFilePtr_t file, u
 #ifdef AFATFS_USE_FREEFILE
 
 /**
- * Update the FAT to link the contiguous series of clusters with indexes [*startCluster...endCluster).
+ * Update the FAT to fill the contiguous series of clusters with indexes [*startCluster...endCluster) with the
+ * specified pattern.
  *
- * The FAT sectors for the clusters must not be shared with any other file.
+ * AFATFS_FAT_PATTERN_TERMINATED_CHAIN - Chain the clusters together in linear sequence and terminate the final cluster
+ * AFATFS_FAT_PATTERN_CHAIN - Chain the clusters together without terminating the final entry
+ * AFATFS_FAT_PATTERN_FREE  - Mark the clusters as free space
  *
  * Returns -
  *     AFATFS_OPERATION_SUCCESS     - When the entire chain has been written
  *     AFATFS_OPERATION_IN_PROGRESS - Call again later with the updated *startCluster value in order to resume writing.
  */
-static afatfsOperationStatus_e afatfs_FATWriteSuperclusterChain(uint32_t *startCluster, uint32_t endCluster)
+static afatfsOperationStatus_e afatfs_FATFillWithPattern(afatfsFATPattern_e pattern, uint32_t *startCluster, uint32_t endCluster)
 {
     afatfsFATSector_t sector;
-    uint32_t fatSectorIndex, fatSectorEntryIndex, fatPhysicalSector;
-    uint32_t nextCluster = *startCluster + 1;
+    uint32_t fatSectorIndex, firstEntryIndex, fatPhysicalSector;
+    uint8_t fatEntrySize;
+    uint32_t nextCluster;
     afatfsOperationStatus_e result;
 
-    afatfs_getFATPositionForCluster(*startCluster, &fatSectorIndex, &fatSectorEntryIndex);
-
-    afatfs_assert(fatSectorEntryIndex == 0); // Start cluster must lie on supercluster boundary
+    // Find the position of the initial cluster to begin our fill
+    afatfs_getFATPositionForCluster(*startCluster, &fatSectorIndex, &firstEntryIndex);
 
     fatPhysicalSector = afatfs_fatSectorToPhysical(0, fatSectorIndex);
 
     while (*startCluster < endCluster) {
-        result = afatfs_cacheSector(fatPhysicalSector, &sector.bytes, AFATFS_CACHE_WRITE | AFATFS_CACHE_DISCARDABLE);
+        // One past the last entry we will fill inside this sector:
+        uint32_t lastEntryIndex = MIN(firstEntryIndex + (endCluster - *startCluster), afatfs_fatEntriesPerSector());
+
+        uint8_t cacheFlags = AFATFS_CACHE_WRITE | AFATFS_CACHE_DISCARDABLE;
+
+        if (firstEntryIndex > 0 || lastEntryIndex < afatfs_fatEntriesPerSector()) {
+            // We're not overwriting the entire FAT sector so we must read the existing contents
+            cacheFlags |= AFATFS_CACHE_READ;
+        }
+
+        result = afatfs_cacheSector(fatPhysicalSector, &sector.bytes, cacheFlags);
 
         if (result != AFATFS_OPERATION_SUCCESS)
             return result;
 
-        // Write all the "next cluster" pointers, saving the last cluster to mark as a terminator
-        uint32_t entriesToWrite = endCluster - *startCluster - 1;
+        switch (pattern) {
+            case AFATFS_FAT_PATTERN_TERMINATED_CHAIN:
+            case AFATFS_FAT_PATTERN_UNTERMINATED_CHAIN:
+                nextCluster = *startCluster + 1;
+                // Write all the "next cluster" pointers
+                if (afatfs.filesystemType == FAT_FILESYSTEM_TYPE_FAT16) {
+                    for (uint32_t i = firstEntryIndex; i < lastEntryIndex; i++, nextCluster++) {
+                        sector.fat16[i] = nextCluster;
+                    }
+                } else {
+                    for (uint32_t i = firstEntryIndex; i < lastEntryIndex; i++, nextCluster++) {
+                        sector.fat32[i] = nextCluster;
+                    }
+                }
 
-        if (afatfs.filesystemType == FAT_FILESYSTEM_TYPE_FAT16) {
-            entriesToWrite = MIN(entriesToWrite, AFATFS_FAT16_FAT_ENTRIES_PER_SECTOR);
+                *startCluster += lastEntryIndex - firstEntryIndex;
 
-            //fprintf(stderr, "FAT: %08x =>> %08x\n", *startCluster, *startCluster + entriesToWrite);
+                if (pattern == AFATFS_FAT_PATTERN_TERMINATED_CHAIN && *startCluster == endCluster) {
+                // We completed the chain! Overwrite the last entry we wrote with the terminator for the end of the chain
+                    if (afatfs.filesystemType == FAT_FILESYSTEM_TYPE_FAT16) {
+                        sector.fat16[lastEntryIndex - 1] = 0xFFFF;
+                    } else {
+                        sector.fat32[lastEntryIndex - 1] = 0xFFFFFFFF;
+                    }
+                    break;
+                }
+            break;
+            case AFATFS_FAT_PATTERN_FREE:
+                fatEntrySize = afatfs.filesystemType == FAT_FILESYSTEM_TYPE_FAT16 ? sizeof(uint16_t) : sizeof(uint32_t);
 
-            for (uint32_t i = 0; i < entriesToWrite; i++, nextCluster++) {
-                sector.fat16[i] = nextCluster;
-            }
-        } else {
-            entriesToWrite = MIN(entriesToWrite, AFATFS_FAT32_FAT_ENTRIES_PER_SECTOR);
+                memset(sector.bytes, 0, (lastEntryIndex - firstEntryIndex) * fatEntrySize);
 
-            //fprintf(stderr, "FAT: %08x =>> %08x\n", *startCluster, *startCluster + entriesToWrite);
-
-            for (uint32_t i = 0; i < entriesToWrite; i++, nextCluster++) {
-                sector.fat32[i] = nextCluster;
-            }
-        }
-
-        *startCluster += entriesToWrite;
-
-        // Write the terminator for the end of the chain
-        if (*startCluster == endCluster - 1) {
-            if (afatfs.filesystemType == FAT_FILESYSTEM_TYPE_FAT16) {
-                sector.fat16[entriesToWrite] = 0xFFFF;
-            } else {
-                sector.fat32[entriesToWrite] = 0xFFFFFFFF;
-            }
-
-            (*startCluster)++;
+                *startCluster += lastEntryIndex - firstEntryIndex;
             break;
         }
 
         fatPhysicalSector++;
+        firstEntryIndex = 0;
     }
 
     return AFATFS_OPERATION_SUCCESS;
@@ -1178,7 +1223,7 @@ static afatfsOperationStatus_e afatfs_saveDirectoryEntry(afatfsFilePtr_t file)
  */
 static afatfsOperationStatus_e afatfs_appendRegularFreeClusterContinue(afatfsFile_t *file)
 {
-    afatfsAppendFreeClusterState_t *opState = &file->operation.state.appendFreeCluster;
+    afatfsAppendFreeCluster_t *opState = &file->operation.state.appendFreeCluster;
     afatfsOperationStatus_e status;
 
     doMore:
@@ -1259,7 +1304,7 @@ static afatfsOperationStatus_e afatfs_appendRegularFreeClusterContinue(afatfsFil
     return AFATFS_OPERATION_IN_PROGRESS;
 }
 
-static void afatfs_appendRegularFreeClusterInitOperationState(afatfsAppendFreeClusterState_t *state, uint32_t previousCluster)
+static void afatfs_appendRegularFreeClusterInitOperationState(afatfsAppendFreeCluster_t *state, uint32_t previousCluster)
 {
     state->phase = AFATFS_APPEND_FREE_CLUSTER_PHASE_INIT;
     state->previousCluster = previousCluster;
@@ -1321,7 +1366,7 @@ static uint32_t afatfs_superClusterSize()
  */
 static afatfsOperationStatus_e afatfs_appendSuperclusterContinue(afatfsFile_t *file)
 {
-    afatfsAppendSuperclusterState_t *opState = &file->operation.state.appendSupercluster;
+    afatfsAppendSupercluster_t *opState = &file->operation.state.appendSupercluster;
 
     afatfsOperationStatus_e status;
     uint32_t freeFileStartCluster;
@@ -1369,7 +1414,7 @@ static afatfsOperationStatus_e afatfs_appendSuperclusterContinue(afatfsFile_t *f
             goto doMore;
         break;
         case AFATFS_APPEND_SUPERCLUSTER_PHASE_UPDATE_FAT:
-            status = afatfs_FATWriteSuperclusterChain(&opState->fatRewriteStartCluster, opState->fatRewriteEndCluster);
+            status = afatfs_FATFillWithPattern(AFATFS_FAT_PATTERN_TERMINATED_CHAIN, &opState->fatRewriteStartCluster, opState->fatRewriteEndCluster);
 
             if (status == AFATFS_OPERATION_SUCCESS) {
                 opState->phase = AFATFS_APPEND_SUPERCLUSTER_PHASE_UPDATE_FREEFILE_DIRECTORY;
@@ -1407,14 +1452,8 @@ static afatfsOperationStatus_e afatfs_appendSuperclusterContinue(afatfsFile_t *f
  *                                    append in progress.
  *     AFATFS_OPERATION_FAILURE     - Operation could not be queued (file was busy) or append failed (filesystem is full).
  *                                    Check afatfs.fileSystemFull
- *
- * TODO
- * Returns false if the file was busy or the filesystem is full (check afatfs.filesystemFull).
- *
- * Otherwise returns true and the cursorCluster is updated immediately (you may freely write to this cluster while the
- * cluster append operation is still in progress).
  */
-afatfsOperationStatus_e afatfs_appendSupercluster(afatfsFilePtr_t file, uint32_t previousCluster)
+static afatfsOperationStatus_e afatfs_appendSupercluster(afatfsFilePtr_t file, uint32_t previousCluster)
 {
     uint32_t superClusterSize = afatfs_superClusterSize();
     afatfsOperationStatus_e status;
@@ -1466,8 +1505,6 @@ static afatfsOperationStatus_e afatfs_appendFreeCluster(afatfsFilePtr_t file)
         status = afatfs_appendRegularFreeCluster(file);
     }
 
-    afatfs_assert(afatfs_FATIsEndOfChainMarker(file->cursorCluster) || file->cursorCluster < afatfs.numClusters + FAT_SMALLEST_LEGAL_CLUSTER_NUMBER); // TODO remove me
-
     return status;
 }
 
@@ -1480,7 +1517,7 @@ static bool afatfs_isEndOfAllocatedFile(afatfsFilePtr_t file)
     }
 }
 
-uint8_t* afatfs_fileGetCursorSectorForRead(afatfsFilePtr_t file)
+static uint8_t* afatfs_fileGetCursorSectorForRead(afatfsFilePtr_t file)
 {
     uint8_t *result;
 
@@ -1528,7 +1565,7 @@ uint8_t* afatfs_fileGetCursorSectorForRead(afatfsFilePtr_t file)
  * This amount of seek is special because we will have to wait on at most one read operation, so it's easy to make
  * the seek atomic.
  */
-bool afatfs_fseekAtomic(afatfsFilePtr_t file, int32_t offset)
+static bool afatfs_fseekAtomic(afatfsFilePtr_t file, int32_t offset)
 {
     // Seeks within a sector
     uint32_t newSectorOffset = offset + file->cursorOffset % AFATFS_SECTOR_SIZE;
@@ -1588,9 +1625,9 @@ bool afatfs_fseekAtomic(afatfsFilePtr_t file, int32_t offset)
     return true;
 }
 
-bool afatfs_fseekInternalContinue(afatfsFile_t *file)
+static bool afatfs_fseekInternalContinue(afatfsFile_t *file)
 {
-    afatfsSeekState_t *opState = &file->operation.state.seek;
+    afatfsSeek_t *opState = &file->operation.state.seek;
     uint32_t clusterSizeBytes = afatfs_clusterSize();
     uint32_t offsetInCluster = afatfs_byteIndexInCluster(file->cursorOffset);
 
@@ -1637,7 +1674,7 @@ bool afatfs_fseekInternalContinue(afatfsFile_t *file)
 /**
  * Seek the file pointer forwards by offset bytes.
  */
-afatfsOperationStatus_e afatfs_fseekInternal(afatfsFilePtr_t file, uint32_t offset, afatfsFileCallback_t callback)
+static afatfsOperationStatus_e afatfs_fseekInternal(afatfsFilePtr_t file, uint32_t offset, afatfsFileCallback_t callback)
 {
     // See if we can seek without queuing an operation
     if (afatfs_fseekAtomic(file, offset)) {
@@ -1774,7 +1811,7 @@ static afatfsOperationStatus_e afatfs_allocateDirectoryEntry(afatfsFilePtr_t dir
     afatfsOperationStatus_e result;
 
     if (directory->operation.operation == AFATFS_FILE_OPERATION_EXTEND_DIRECTORY) {
-        afatfsExtendDirectoryState_t *extendState = &directory->operation.state.extendDirectory;
+        afatfsExtendDirectory_t *extendState = &directory->operation.state.extendDirectory;
 
         // First, append an empty cluster
         if (extendState->sectorIndex == -1) {
@@ -1834,7 +1871,7 @@ static afatfsOperationStatus_e afatfs_allocateDirectoryEntry(afatfsFilePtr_t dir
             }
             
             directory->operation.operation = AFATFS_FILE_OPERATION_EXTEND_DIRECTORY;
-            afatfsExtendDirectoryState_t *extendState = &directory->operation.state.extendDirectory;
+            afatfsExtendDirectory_t *extendState = &directory->operation.state.extendDirectory;
 
             afatfs_appendRegularFreeClusterInitOperationState(&extendState->appendFreeCluster, directory->cursorPreviousCluster);
 
@@ -1861,7 +1898,7 @@ static afatfsFilePtr_t afatfs_allocateFileHandle()
 
 static void afatfs_initSubdirectoryContinue(afatfsFile_t *file)
 {
-    afatfsInitSubdirectoryState_t *opState = &file->operation.state.initSubdirectory;
+    afatfsInitSubdirectory_t *opState = &file->operation.state.initSubdirectory;
     uint8_t *sectorBuffer;
     afatfsOperationStatus_e status;
 
@@ -1942,9 +1979,9 @@ static void afatfs_initSubdirectory(afatfsFile_t *file, afatfsFile_t parentDirec
     afatfs_initSubdirectoryContinue(file);
 }
 
-static void afatfs_createFileInternalContinue(afatfsFile_t *file)
+static void afatfs_createFileContinue(afatfsFile_t *file)
 {
-    afatfsCreateFileState_t *opState = &file->operation.state.createFile;
+    afatfsCreateFile_t *opState = &file->operation.state.createFile;
     fatDirectoryEntry_t *entry;
     afatfsOperationStatus_e status;
 
@@ -2059,6 +2096,177 @@ static void afatfs_initFileHandle(afatfsFilePtr_t file)
     file->lockedCacheIndex = -1;
 }
 
+static afatfsOperationStatus_e afatfs_ftruncateContinue(afatfsFilePtr_t file)
+{
+    afatfsTruncateFile_t *opState = &file->operation.state.truncateFile;
+    afatfsOperationStatus_e status;
+    uint32_t oldFreeFileStart;
+
+    doMore:
+
+    switch (opState->phase) {
+        case AFATFS_TRUNCATE_FILE_UPDATE_DIRECTORY:
+            file->directoryEntry.firstClusterHigh = 0;
+            file->directoryEntry.firstClusterLow = 0;
+            file->directoryEntry.fileSize = 0;
+            afatfs_fseek(file, 0, AFATFS_SEEK_SET);
+
+            status = afatfs_saveDirectoryEntry(file);
+
+            if (status == AFATFS_OPERATION_SUCCESS) {
+                if (opState->endCluster) {
+                    opState->phase = AFATFS_TRUNCATE_FILE_ERASE_FAT_CHAIN_CONTIGUOUS;
+                } else {
+                    opState->phase = AFATFS_TRUNCATE_FILE_ERASE_FAT_CHAIN_NORMAL;
+                }
+                goto doMore;
+            }
+        break;
+        case AFATFS_TRUNCATE_FILE_ERASE_FAT_CHAIN_CONTIGUOUS:
+            // Prepare the clusters to be added back on to the beginning of the freefile
+            status = afatfs_FATFillWithPattern(AFATFS_FAT_PATTERN_UNTERMINATED_CHAIN, &opState->startCluster, opState->endCluster);
+
+            if (status == AFATFS_OPERATION_SUCCESS) {
+                opState->phase = AFATFS_TRUNCATE_FILE_PREPEND_TO_FREEFILE;
+                goto doMore;
+            }
+        break;
+        case AFATFS_TRUNCATE_FILE_PREPEND_TO_FREEFILE:
+            // Note, it's okay to run this code several times:
+            oldFreeFileStart = (afatfs.freeFile.directoryEntry.firstClusterHigh << 16) | afatfs.freeFile.directoryEntry.firstClusterLow;
+
+            afatfs.freeFile.directoryEntry.firstClusterHigh = opState->startCluster >> 16;
+            afatfs.freeFile.directoryEntry.firstClusterLow = opState->startCluster & 0xFFFF;
+            afatfs.freeFile.directoryEntry.fileSize += (oldFreeFileStart - opState->startCluster) * afatfs_clusterSize();
+
+            if (afatfs_saveDirectoryEntry(&afatfs.freeFile) == AFATFS_OPERATION_SUCCESS) {
+                opState->phase = AFATFS_TRUNCATE_FILE_SUCCESS;
+                goto doMore;
+            }
+        break;
+        case AFATFS_TRUNCATE_FILE_ERASE_FAT_CHAIN_NORMAL:
+            while (opState->startCluster != 0) {
+                uint32_t nextCluster;
+
+                status = afatfs_FATGetNextCluster(0, opState->startCluster, &nextCluster);
+
+                if (status != AFATFS_OPERATION_SUCCESS) {
+                    return status;
+                }
+
+                status = afatfs_FATSetNextCluster(opState->startCluster, 0);
+
+                if (status != AFATFS_OPERATION_SUCCESS) {
+                    return status;
+                }
+
+                opState->startCluster = nextCluster;
+
+                if (afatfs_FATIsEndOfChainMarker(opState->startCluster)) {
+                    opState->startCluster = 0;
+                }
+            }
+
+            opState->phase = AFATFS_TRUNCATE_FILE_SUCCESS;
+            goto doMore;
+        break;
+        case AFATFS_TRUNCATE_FILE_SUCCESS:
+            if (opState->callback) {
+                opState->callback(file);
+            }
+            return AFATFS_OPERATION_SUCCESS;
+        break;
+    }
+
+    return status;
+}
+
+static void afatfs_funlinkContinue(afatfsFilePtr_t file)
+{
+    afatfsUnlinkFile_t *opState = &file->operation.state.unlinkFile;
+    afatfsOperationStatus_e status;
+
+    doMore:
+    switch (opState->phase) {
+        case AFATFS_DELETE_FILE_ERASE_FAT:
+            status = afatfs_ftruncateContinue(file);
+
+            if (status == AFATFS_OPERATION_SUCCESS) {
+                opState->phase = AFATFS_DELETE_FILE_ERASE_DIRECTORY_ENTRY;
+                goto doMore;
+            }
+        break;
+        case AFATFS_DELETE_FILE_ERASE_DIRECTORY_ENTRY:
+            memset(&file->directoryEntry, 0, sizeof(file->directoryEntry));
+
+            // Replace the unlink operation with a file close (that'll flush the zeroed directory entry out to disk)
+            file->operation.operation = AFATFS_FILE_OPERATION_NONE;
+            afatfs_fclose(file);
+        break;
+    }
+}
+
+bool afatfs_funlink(afatfsFilePtr_t file)
+{
+    if (afatfs_fileIsBusy(file))
+        return false;
+
+    afatfs_fseek(file, 0, AFATFS_SEEK_SET);
+
+    afatfsUnlinkFile_t *opState = &file->operation.state.unlinkFile;
+    file->operation.operation = AFATFS_FILE_OPERATION_UNLINK;
+
+    uint32_t fileStartCluster = (file->directoryEntry.firstClusterHigh << 16) | file->directoryEntry.firstClusterLow;
+
+    if (fileStartCluster == 0) {
+        opState->phase = AFATFS_DELETE_FILE_ERASE_DIRECTORY_ENTRY;
+    } else {
+        opState->phase = AFATFS_DELETE_FILE_ERASE_FAT;
+
+        opState->truncateFile.phase = AFATFS_TRUNCATE_FILE_INITIAL;
+        opState->truncateFile.callback = NULL;
+        opState->truncateFile.startCluster = fileStartCluster;
+        if ((file->mode & AFATFS_FILE_MODE_CONTIGUOUS) != 0) {
+            opState->truncateFile.endCluster = (afatfs.freeFile.directoryEntry.firstClusterHigh << 16) | afatfs.freeFile.directoryEntry.firstClusterLow;
+        } else {
+            opState->truncateFile.endCluster = 0;
+        }
+    }
+
+    afatfs_funlinkContinue(file);
+
+    return true;
+}
+
+/**
+ * Truncate the file to zero bytes in length.
+ *
+ * Returns true if the operation was successfully queued or false if the file is busy (try again later).
+ */
+bool afatfs_ftruncate(afatfsFilePtr_t file, afatfsFileCallback_t callback)
+{
+    afatfsTruncateFile_t *opState;
+
+    if (afatfs_fileIsBusy(file))
+        return false;
+
+    afatfs_fseek(file, 0, AFATFS_SEEK_SET);
+    file->operation.operation = AFATFS_FILE_OPERATION_TRUNCATE;
+    opState = &file->operation.state.truncateFile;
+    opState->callback = callback;
+    opState->phase = AFATFS_TRUNCATE_FILE_INITIAL;
+    opState->startCluster = (file->directoryEntry.firstClusterHigh << 16) | file->directoryEntry.firstClusterLow;
+
+    if ((file->mode & AFATFS_FILE_MODE_CONTIGUOUS) != 0) {
+        opState->endCluster = opState->startCluster + file->directoryEntry.fileSize / afatfs_clusterSize();
+    } else {
+        opState->endCluster = 0;
+    }
+
+    return true;
+}
+
+
 /**
  * Open (or create) a file in the CWD with the given filename.
  *
@@ -2069,10 +2277,10 @@ static void afatfs_initFileHandle(afatfsFilePtr_t file)
  *                    it does not exist.
  * callback         - Called when the operation is complete
  */
-static afatfsFilePtr_t afatfs_createFileInternal(afatfsFilePtr_t file, const char *name, uint8_t attrib, uint8_t fileMode,
+static afatfsFilePtr_t afatfs_createFile(afatfsFilePtr_t file, const char *name, uint8_t attrib, uint8_t fileMode,
         afatfsFileCallback_t callback)
 {
-    afatfsCreateFileState_t *opState;
+    afatfsCreateFile_t *opState;
 
     afatfs_initFileHandle(file);
 
@@ -2106,7 +2314,7 @@ static afatfsFilePtr_t afatfs_createFileInternal(afatfsFilePtr_t file, const cha
         opState->phase = AFATFS_CREATEFILE_PHASE_INITIAL;
     }
 
-    afatfs_createFileInternalContinue(file);
+    afatfs_createFileContinue(file);
 
     return file;
 }
@@ -2161,7 +2369,7 @@ afatfsFilePtr_t afatfs_mkdir(const char *filename, afatfsFileCallback_t callback
     afatfsFilePtr_t file = afatfs_allocateFileHandle();
 
     if (file) {
-        afatfs_createFileInternal(file, filename, FAT_FILE_ATTRIBUTE_DIRECTORY, AFATFS_FILE_MODE_CREATE | AFATFS_FILE_MODE_READ | AFATFS_FILE_MODE_WRITE, callback);
+        afatfs_createFile(file, filename, FAT_FILE_ATTRIBUTE_DIRECTORY, AFATFS_FILE_MODE_CREATE | AFATFS_FILE_MODE_READ | AFATFS_FILE_MODE_WRITE, callback);
     }
 
     return file;
@@ -2264,7 +2472,7 @@ bool afatfs_fopen(const char *filename, const char *mode, afatfsFileCallback_t c
     file = afatfs_allocateFileHandle();
 
     if (file) {
-        afatfs_createFileInternal(file, filename, FAT_FILE_ATTRIBUTE_ARCHIVE, fileMode, complete);
+        afatfs_createFile(file, filename, FAT_FILE_ATTRIBUTE_ARCHIVE, fileMode, complete);
     }
 
     return file != NULL;
@@ -2273,7 +2481,7 @@ bool afatfs_fopen(const char *filename, const char *mode, afatfsFileCallback_t c
 /**
  * Get a reference to the cache sector at the file cursor position for write.
  */
-uint8_t* afatfs_fileLockCursorSectorForWrite(afatfsFilePtr_t file)
+static uint8_t* afatfs_fileLockCursorSectorForWrite(afatfsFilePtr_t file)
 {
     afatfsOperationStatus_e status;
     uint8_t *result;
@@ -2463,7 +2671,7 @@ static void afatfs_fileOperationContinue(afatfsFile_t *file)
 
     switch (file->operation.operation) {
         case AFATFS_FILE_OPERATION_CREATE_FILE:
-            afatfs_createFileInternalContinue(file);
+            afatfs_createFileContinue(file);
         break;
         case AFATFS_FILE_OPERATION_SEEK:
             afatfs_fseekInternalContinue(file);
@@ -2471,9 +2679,17 @@ static void afatfs_fileOperationContinue(afatfsFile_t *file)
         case AFATFS_FILE_OPERATION_CLOSE:
             afatfs_closeFileContinue(file);
         break;
+        case AFATFS_FILE_OPERATION_UNLINK:
+             afatfs_funlinkContinue(file);
+        break;
+        case AFATFS_FILE_OPERATION_TRUNCATE:
+            if (afatfs_ftruncateContinue(file) != AFATFS_OPERATION_IN_PROGRESS) {
+                file->operation.operation = AFATFS_FILE_OPERATION_NONE;
+            }
+        break;
 #ifdef AFATFS_USE_FREEFILE
         case AFATFS_FILE_OPERATION_APPEND_SUPERCLUSTER:
-            if (afatfs_appendSuperclusterContinue(file)) {
+            if (afatfs_appendSuperclusterContinue(file) != AFATFS_OPERATION_IN_PROGRESS) {
                 file->operation.operation = AFATFS_FILE_OPERATION_NONE;
             }
         break;
@@ -2496,7 +2712,7 @@ static void afatfs_fileOperationContinue(afatfsFile_t *file)
     }
 }
 
-void afatfs_fileOperationsPoll()
+static void afatfs_fileOperationsPoll()
 {
     for (int i = 0; i < AFATFS_MAX_OPEN_FILES; i++) {
         afatfs_fileOperationContinue(&afatfs.openFiles[i]);
@@ -2534,7 +2750,7 @@ static void afatfs_findLargestContiguousFreeBlockBegin()
  */
 static afatfsOperationStatus_e afatfs_findLargestContiguousFreeBlockContinue()
 {
-    afatfsFreeSpaceSearchState_t *opState = &afatfs.initState.freeSpaceSearch;
+    afatfsFreeSpaceSearch_t *opState = &afatfs.initState.freeSpaceSearch;
     uint32_t fatEntriesPerSector = afatfs_fatEntriesPerSector();
     uint32_t candidateGapLength, searchLimit;
     afatfsFindClusterStatus_e searchStatus;
@@ -2649,7 +2865,7 @@ static void afatfs_initContinue()
                     afatfs_chdir(NULL);
 
 #ifdef AFATFS_USE_FREEFILE
-                    afatfs_createFileInternal(&afatfs.freeFile, AFATFS_FREESPACE_FILENAME, FAT_FILE_ATTRIBUTE_SYSTEM,
+                    afatfs_createFile(&afatfs.freeFile, AFATFS_FREESPACE_FILENAME, FAT_FILE_ATTRIBUTE_SYSTEM,
                         AFATFS_FILE_MODE_CREATE | AFATFS_FILE_MODE_RETAIN_DIRECTORY, afatfs_freeFileCreated);
                     afatfs.substate = AFATFS_SUBSTATE_INITIALIZATION_FREEFILE_CREATING;
 #else
@@ -2702,7 +2918,7 @@ static void afatfs_initContinue()
             }
         break;
         case AFATFS_SUBSTATE_INITIALIZATION_FREEFILE_UPDATE_FAT:
-            status = afatfs_FATWriteSuperclusterChain(&afatfs.initState.freeSpaceFAT.startCluster, afatfs.initState.freeSpaceFAT.endCluster);
+            status = afatfs_FATFillWithPattern(AFATFS_FAT_PATTERN_TERMINATED_CHAIN, &afatfs.initState.freeSpaceFAT.startCluster, afatfs.initState.freeSpaceFAT.endCluster);
 
             if (status == AFATFS_OPERATION_SUCCESS) {
                 afatfs.substate = AFATFS_SUBSTATE_INITIALIZATION_FREEFILE_SAVE_DIR_ENTRY;
@@ -2743,6 +2959,7 @@ void afatfs_poll()
     }
 }
 
+// TODO don't expose this
 afatfsFilesystemState_e afatfs_getFilesystemState()
 {
     return afatfs.filesystemState;
@@ -2777,12 +2994,10 @@ bool afatfs_destroy()
         for (int i = 0; i < AFATFS_NUM_CACHE_SECTORS; i++) {
             // Flush even if the pages are "locked"
             if (afatfs.cacheDescriptor[i].state == AFATFS_CACHE_STATE_DIRTY) {
-                if (sdcard_writeBlock(afatfs.cacheDescriptor[i].sectorIndex, afatfs_cacheSectorGetMemory(i), afatfs_sdcardWriteComplete, 0)) {
-                    afatfs.cacheDescriptor[i].state = AFATFS_CACHE_STATE_WRITING;
+                if (afatfs_cacheFlushSector(i)) {
+                    // Card will be busy making that write so don't bother trying to flush any other pages right now
+                    return false;
                 }
-                return false;
-            } else if (afatfs.cacheDescriptor[i].state == AFATFS_CACHE_STATE_WRITING) {
-                return false;
             }
         }
     }

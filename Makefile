@@ -6,7 +6,7 @@ CFLAGS = -O0 \
 	-Wall -pedantic -Wextra -Wshadow \
 	-Ilib/
 
-AFATFS_SOURCE = lib/sdcard_standard.c lib/fat_standard.c lib/asyncfatfs.c
+AFATFS_SOURCE = lib/fat_standard.c lib/asyncfatfs.c
 TEST_SOURCE = tests/sdcard_sim.c
 SDCARD_TEMP_FILE = tests/sdcard_temp.dmg
 

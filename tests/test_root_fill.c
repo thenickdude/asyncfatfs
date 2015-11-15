@@ -5,7 +5,6 @@
 
 #include "sdcard_sim.h"
 #include "sdcard.h"
-#include "sdcard_standard.h"
 #include "fat_standard.h"
 #include "asyncfatfs.h"
 
