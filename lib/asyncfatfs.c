@@ -659,16 +659,6 @@ static uint32_t afatfs_fileClusterToPhysical(uint32_t clusterNumber, uint32_t se
     return afatfs.clusterStartSector + (clusterNumber - 2) * afatfs.sectorsPerCluster + sectorIndex;
 }
 
-static uint32_t afatfs_directorySectorToPhysical(uint32_t clusterNumber, uint32_t sectorNumber)
-{
-    if (clusterNumber == 0) {
-        // FAT16 root directory
-        return afatfs.fatStartSector + AFATFS_NUM_FATS * afatfs.fatSectors + sectorNumber;
-    } else {
-        return afatfs_fileClusterToPhysical(clusterNumber, sectorNumber);
-    }
-}
-
 static uint32_t afatfs_fileGetCursorPhysicalSector(afatfsFilePtr_t file)
 {
     if (file->type == AFATFS_FILE_TYPE_FAT16_ROOT_DIRECTORY) {
@@ -1174,11 +1164,8 @@ static afatfsOperationStatus_e afatfs_saveDirectoryEntry(afatfsFilePtr_t file)
 {
     uint8_t *sector;
     afatfsOperationStatus_e result;
-    uint32_t sectorNumber;
 
-    sectorNumber = afatfs_directorySectorToPhysical(file->directoryEntryPos.clusterNumber, file->directoryEntryPos.sectorNumber);
-
-    result = afatfs_cacheSector(sectorNumber, &sector, AFATFS_CACHE_READ | AFATFS_CACHE_WRITE);
+    result = afatfs_cacheSector(file->directoryEntryPos.sectorNumberPhysical, &sector, AFATFS_CACHE_READ | AFATFS_CACHE_WRITE);
 
     if (result == AFATFS_OPERATION_SUCCESS) {
         // (sub)directories don't store a filesize in their directory entry:
@@ -1780,7 +1767,7 @@ afatfsOperationStatus_e afatfs_findNext(afatfsFilePtr_t directory, afatfsFinder_
 
         *dirEntry = (fatDirectoryEntry_t*) sector + finder->entryIndex;
 
-        afatfs_fileGetCursorClusterAndSector(directory, &finder->clusterNumber, &finder->sectorNumber);
+        finder->sectorNumberPhysical = afatfs_fileGetCursorPhysicalSector(directory);
 
         return AFATFS_OPERATION_SUCCESS;
     } else {
@@ -2180,7 +2167,7 @@ static void afatfs_createFileContinue(afatfsFile_t *file)
                 uint8_t *directorySector;
 
                 status = afatfs_cacheSector(
-                    afatfs_directorySectorToPhysical(file->directoryEntryPos.clusterNumber, file->directoryEntryPos.sectorNumber),
+                    file->directoryEntryPos.sectorNumberPhysical,
                     &directorySector,
                     AFATFS_CACHE_READ | AFATFS_CACHE_RETAIN
                 );
@@ -2364,7 +2351,7 @@ static void afatfs_closeFileContinue(afatfsFilePtr_t file)
     if (file->type == AFATFS_FILE_TYPE_DIRECTORY || afatfs_saveDirectoryEntry(file) == AFATFS_OPERATION_SUCCESS) {
         // Release our reservation on the directory cache if needed
         if ((file->mode & AFATFS_FILE_MODE_RETAIN_DIRECTORY) != 0) {
-            descriptor = afatfs_findCacheSector(afatfs_directorySectorToPhysical(file->directoryEntryPos.clusterNumber, file->directoryEntryPos.sectorNumber));
+            descriptor = afatfs_findCacheSector(file->directoryEntryPos.sectorNumberPhysical);
 
             if (descriptor) {
                 descriptor->retainCount = MAX(descriptor->retainCount - 1, 0);

@@ -21,8 +21,7 @@ typedef enum {
 } afatfsOperationStatus_e;
 
 typedef struct afatfsDirEntryPointer_t {
-    uint32_t clusterNumber;
-    uint16_t sectorNumber;
+    uint32_t sectorNumberPhysical;
     int16_t entryIndex;
 } afatfsDirEntryPointer_t;
 
