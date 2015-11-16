@@ -8,6 +8,8 @@
 #include "fat_standard.h"
 #include "asyncfatfs.h"
 
+#include "common.h"
+
 // FAT tops out at 64k files/subdir, but this seems enough for us to test:
 #define MAX_TEST_FILES 10000
 
@@ -37,7 +39,7 @@ static void logDirCreated(afatfsFilePtr_t dir)
     }
 
     afatfs_chdir(dir);
-    afatfs_fclose(dir);
+    testAssert(afatfs_fclose(dir, NULL), "Expected to be able to queue close on directory");
 
     testStage = TEST_STAGE_CREATE_LOG_FILES;
 }
@@ -45,7 +47,7 @@ static void logDirCreated(afatfsFilePtr_t dir)
 static void logFileCreated(afatfsFilePtr_t file)
 {
     if (file) {
-        afatfs_fclose(file);
+        afatfs_fclose(file, NULL);
 
         testLogFileNumber++;
         testStage = TEST_STAGE_CREATE_LOG_FILES;

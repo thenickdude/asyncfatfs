@@ -36,7 +36,7 @@ bool fat_isDirectoryEntryTerminator(fatDirectoryEntry_t *entry)
 
 bool fat_isDirectoryEntryEmpty(fatDirectoryEntry_t *entry)
 {
-    return (unsigned char) entry->filename[0] == 0xE5;
+    return (unsigned char) entry->filename[0] == FAT_DELETED_FILE_MARKER;
 }
 
 /**

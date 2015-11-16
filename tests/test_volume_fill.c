@@ -7,8 +7,10 @@
 #include "sdcard.h"
 #include "asyncfatfs.h"
 
+#include "common.h"
+
 // Attempt to write a little over 2GB of log entries per file
-#define LOG_ENTRY_WRITE_MAX 100000000
+#define LOG_ENTRY_COUNT 100000000
 
 typedef enum {
     TEST_STAGE_INIT = 0,
@@ -37,7 +39,7 @@ static uint32_t readBytesThisFile = 0;
 static uint32_t writtenBytesTotal = 0;
 static uint32_t readBytesTotal = 0;
 
-void logFileCreatedForWrite(afatfsFilePtr_t file)
+void logFileCreatedForSolidAppend(afatfsFilePtr_t file)
 {
     if (file) {
         testFile = file;
@@ -58,7 +60,7 @@ void logDirCreated(afatfsFilePtr_t dir)
 
     afatfs_chdir(dir);
 
-    afatfs_fclose(dir);
+    testAssert(afatfs_fclose(dir, NULL), "Expected to be able to queue close on directory");
 
     testStage = TEST_STAGE_CREATE_LOG_FILE;
 }
@@ -74,7 +76,6 @@ void logFileOpenedForRead(afatfsFilePtr_t file)
         testStage = TEST_STAGE_COMPLETE;
     }
 }
-
 
 bool continueTesting() {
     char testBuffer[64];
@@ -106,14 +107,14 @@ bool continueTesting() {
                 // Write a file in contigous-append mode
                 sprintf(filename, "LOG%05d.TXT", writeLogFileNumber);
 
-                afatfs_fopen(filename, "as", logFileCreatedForWrite);
+                afatfs_fopen(filename, "as", logFileCreatedForSolidAppend);
             }
         break;
         case TEST_STAGE_WRITE_LOG:
-            if (writeLogEntryCount >= LOG_ENTRY_WRITE_MAX) {
+            if (writeLogEntryCount >= LOG_ENTRY_COUNT) {
                 testStage = TEST_STAGE_CLOSE_LOG;
             } else {
-                sprintf(testBuffer, "Log %05d entry %6d/%6d\n", writeLogFileNumber, writeLogEntryCount + 1, LOG_ENTRY_WRITE_MAX);
+                sprintf(testBuffer, "Log %05d entry %6d/%6d\n", writeLogFileNumber, writeLogEntryCount + 1, LOG_ENTRY_COUNT);
 
                 uint32_t writtenBytes;
 
@@ -132,7 +133,7 @@ bool continueTesting() {
         break;
         case TEST_STAGE_CLOSE_LOG:
             // Wait for the file to close
-            if (!afatfs_fclose(testFile)) {
+            if (!afatfs_fclose(testFile, NULL)) {
                 break;
             }
 
@@ -159,7 +160,7 @@ bool continueTesting() {
             readBytes = afatfs_fread(testFile, (uint8_t*)testBuffer, sizeof(testBuffer));
 
             if (readBytes == 0 && afatfs_feof(testFile)) {
-                afatfs_fclose(testFile);
+                testAssert(afatfs_fclose(testFile, NULL), "Expected to be able to queue close on file");
 
                 readBytesTotal += readBytesThisFile;
 

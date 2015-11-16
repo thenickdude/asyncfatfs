@@ -147,8 +147,6 @@ typedef struct afatfsCacheBlockDescriptor_t {
     unsigned discardable:1;
 } afatfsCacheBlockDescriptor_t;
 
-typedef void (*afatfsCallback_t)();
-
 typedef enum {
     AFATFS_FREE_SPACE_SEARCH_PHASE_FIND_HOLE,
     AFATFS_FREE_SPACE_SEARCH_PHASE_GROW_HOLE
@@ -237,20 +235,25 @@ typedef enum {
 
 typedef struct afatfsTruncateFile_t {
     uint32_t startCluster; // First cluster to erase
+    uint32_t currentCluster; // Used to mark progress
     uint32_t endCluster; // Optional, for contiguous files set to 1 past the end cluster of the file, otherwise set to 0
     afatfsFileCallback_t callback;
     afatfsTruncateFilePhase_e phase;
 } afatfsTruncateFile_t;
 
 typedef enum {
-    AFATFS_DELETE_FILE_ERASE_DIRECTORY_ENTRY,
+    AFATFS_DELETE_FILE_DELETE_DIRECTORY_ENTRY,
     AFATFS_DELETE_FILE_DEALLOCATE_CLUSTERS,
 } afatfsDeleteFilePhase_e;
 
 typedef struct afatfsDeleteFile_t {
     afatfsTruncateFile_t truncateFile;
-    afatfsDeleteFilePhase_e phase;
+    afatfsCallback_t callback;
 } afatfsUnlinkFile_t;
+
+typedef struct afatfsCloseFile_t {
+    afatfsCallback_t callback;
+} afatfsCloseFile_t;
 
 typedef enum {
     AFATFS_FILE_OPERATION_NONE,
@@ -276,6 +279,7 @@ typedef struct afatfsOperation_t {
         afatfsExtendSubdirectory_t extendSubdirectory;
         afatfsUnlinkFile_t unlinkFile;
         afatfsTruncateFile_t truncateFile;
+        afatfsCloseFile_t closeFile;
     } state;
 } afatfsFileOperation_t;
 
@@ -2002,7 +2006,7 @@ static afatfsOperationStatus_e afatfs_ftruncateContinue(afatfsFilePtr_t file)
         break;
         case AFATFS_TRUNCATE_FILE_ERASE_FAT_CHAIN_CONTIGUOUS:
             // Prepare the clusters to be added back on to the beginning of the freefile
-            status = afatfs_FATFillWithPattern(AFATFS_FAT_PATTERN_UNTERMINATED_CHAIN, &opState->startCluster, opState->endCluster);
+            status = afatfs_FATFillWithPattern(AFATFS_FAT_PATTERN_UNTERMINATED_CHAIN, &opState->currentCluster, opState->endCluster);
 
             if (status == AFATFS_OPERATION_SUCCESS) {
                 opState->phase = AFATFS_TRUNCATE_FILE_PREPEND_TO_FREEFILE;
@@ -2024,22 +2028,25 @@ static afatfsOperationStatus_e afatfs_ftruncateContinue(afatfsFilePtr_t file)
             }
         break;
         case AFATFS_TRUNCATE_FILE_ERASE_FAT_CHAIN_NORMAL:
-            while (!afatfs_FATIsEndOfChainMarker(opState->startCluster)) {
+            while (!afatfs_FATIsEndOfChainMarker(opState->currentCluster)) {
                 uint32_t nextCluster;
 
-                status = afatfs_FATGetNextCluster(0, opState->startCluster, &nextCluster);
+                status = afatfs_FATGetNextCluster(0, opState->currentCluster, &nextCluster);
 
                 if (status != AFATFS_OPERATION_SUCCESS) {
                     return status;
                 }
 
-                status = afatfs_FATSetNextCluster(opState->startCluster, 0);
+                status = afatfs_FATSetNextCluster(opState->currentCluster, 0);
 
                 if (status != AFATFS_OPERATION_SUCCESS) {
                     return status;
                 }
 
-                opState->startCluster = nextCluster;
+                opState->currentCluster = nextCluster;
+
+                // Searches for unallocated regular clusters should be told about this free cluster now
+                afatfs.lastClusterAllocated = MIN(afatfs.lastClusterAllocated, opState->currentCluster - 1);
             }
 
             opState->phase = AFATFS_TRUNCATE_FILE_SUCCESS;
@@ -2077,14 +2084,13 @@ bool afatfs_ftruncate(afatfsFilePtr_t file, afatfsFileCallback_t callback)
     if (afatfs_fileIsBusy(file))
         return false;
 
-    afatfs_fseek(file, 0, AFATFS_SEEK_SET);
-
     file->operation.operation = AFATFS_FILE_OPERATION_TRUNCATE;
 
     opState = &file->operation.state.truncateFile;
     opState->callback = callback;
     opState->phase = AFATFS_TRUNCATE_FILE_INITIAL;
     opState->startCluster = (file->directoryEntry.firstClusterHigh << 16) | file->directoryEntry.firstClusterLow;
+    opState->currentCluster = opState->startCluster;
 
     if ((file->mode & AFATFS_FILE_MODE_CONTIGUOUS) != 0) {
         // The file is contiguous and ends where the freefile begins
@@ -2094,9 +2100,12 @@ bool afatfs_ftruncate(afatfsFilePtr_t file, afatfsFileCallback_t callback)
         opState->endCluster = 0;
     }
 
+    // We'll drop the cluster chain from the directory entry immediately
     file->directoryEntry.firstClusterHigh = 0;
     file->directoryEntry.firstClusterLow = 0;
     file->directoryEntry.fileSize = 0;
+
+    afatfs_fseek(file, 0, AFATFS_SEEK_SET);
 
     return true;
 }
@@ -2233,54 +2242,46 @@ static void afatfs_funlinkContinue(afatfsFilePtr_t file)
     afatfsUnlinkFile_t *opState = &file->operation.state.unlinkFile;
     afatfsOperationStatus_e status;
 
-    doMore:
-    switch (opState->phase) {
-        case AFATFS_DELETE_FILE_DEALLOCATE_CLUSTERS:
-            status = afatfs_ftruncateContinue(file);
+    status = afatfs_ftruncateContinue(file);
 
-            if (status == AFATFS_OPERATION_SUCCESS) {
-                opState->phase = AFATFS_DELETE_FILE_ERASE_DIRECTORY_ENTRY;
-                goto doMore;
-            }
-        break;
-        case AFATFS_DELETE_FILE_ERASE_DIRECTORY_ENTRY:
-            memset(&file->directoryEntry, 0, sizeof(file->directoryEntry));
-
-            // Replace the unlink operation with a file close (that'll flush the zeroed directory entry out to disk)
-            file->operation.operation = AFATFS_FILE_OPERATION_NONE;
-            afatfs_fclose(file);
-        break;
+    if (status == AFATFS_OPERATION_SUCCESS) {
+        // Once the truncation is completed, we can close the file handle
+        file->operation.operation = AFATFS_FILE_OPERATION_NONE;
+        afatfs_fclose(file, opState->callback);
     }
 }
 
-bool afatfs_funlink(afatfsFilePtr_t file)
+/**
+ * Delete and close the file.
+ *
+ * Returns true if the operation was succesfully queued (callback will be called some time after this routine returns)
+ * or false if the file is busy and you should try again later.
+ */
+bool afatfs_funlink(afatfsFilePtr_t file, afatfsCallback_t callback)
 {
-    if (afatfs_fileIsBusy(file))
+    afatfsUnlinkFile_t *opState = &file->operation.state.unlinkFile;
+
+    /*
+     * Internally an unlink is implemented by first doing a ftruncate(), marking the directory entry as deleted,
+     * then doing a fclose() operation.
+     */
+
+    // Start the sub-operation of truncating the file
+    if (!afatfs_ftruncate(file, NULL))
         return false;
 
-    afatfs_fseek(file, 0, AFATFS_SEEK_SET);
+    /* The truncate operation will flush the directory entry for us, so go ahead and mark that as deleted in memory
+     * for it.
+     */
+    file->directoryEntry.filename[0] = FAT_DELETED_FILE_MARKER;
 
-    afatfsUnlinkFile_t *opState = &file->operation.state.unlinkFile;
+    /*
+     * The unlink operation has its own private callback field so that the truncate suboperation doesn't end up
+     * calling back early when it completes:
+     */
+    opState->callback = callback;
+
     file->operation.operation = AFATFS_FILE_OPERATION_UNLINK;
-
-    uint32_t fileStartCluster = (file->directoryEntry.firstClusterHigh << 16) | file->directoryEntry.firstClusterLow;
-
-    if (fileStartCluster == 0) {
-        opState->phase = AFATFS_DELETE_FILE_ERASE_DIRECTORY_ENTRY;
-    } else {
-        opState->phase = AFATFS_DELETE_FILE_DEALLOCATE_CLUSTERS;
-
-        opState->truncateFile.phase = AFATFS_TRUNCATE_FILE_INITIAL;
-        opState->truncateFile.callback = NULL;
-        opState->truncateFile.startCluster = fileStartCluster;
-        if ((file->mode & AFATFS_FILE_MODE_CONTIGUOUS) != 0) {
-            opState->truncateFile.endCluster = (afatfs.freeFile.directoryEntry.firstClusterHigh << 16) | afatfs.freeFile.directoryEntry.firstClusterLow;
-        } else {
-            opState->truncateFile.endCluster = 0;
-        }
-    }
-
-    afatfs_funlinkContinue(file);
 
     return true;
 }
@@ -2340,6 +2341,7 @@ static afatfsFilePtr_t afatfs_createFile(afatfsFilePtr_t file, const char *name,
 static void afatfs_closeFileContinue(afatfsFilePtr_t file)
 {
     afatfsCacheBlockDescriptor_t *descriptor;
+    afatfsCloseFile_t *opState = &file->operation.state.closeFile;
 
     /*
      * Directories don't update their parent directory entries over time, because their fileSize field in the directory
@@ -2348,20 +2350,28 @@ static void afatfs_closeFileContinue(afatfsFilePtr_t file)
      *
      * So don't bother trying to save their directory entries during fclose().
      */
-    if (file->type == AFATFS_FILE_TYPE_DIRECTORY || afatfs_saveDirectoryEntry(file) == AFATFS_OPERATION_SUCCESS) {
-        // Release our reservation on the directory cache if needed
-        if ((file->mode & AFATFS_FILE_MODE_RETAIN_DIRECTORY) != 0) {
-            descriptor = afatfs_findCacheSector(file->directoryEntryPos.sectorNumberPhysical);
-
-            if (descriptor) {
-                descriptor->retainCount = MAX(descriptor->retainCount - 1, 0);
-            }
+    if (file->type != AFATFS_FILE_TYPE_DIRECTORY) {
+        if (afatfs_saveDirectoryEntry(file) != AFATFS_OPERATION_SUCCESS) {
+            return;
         }
+    }
 
-        afatfs_fileUnlockCacheSector(file);
+    // Release our reservation on the directory cache if needed
+    if ((file->mode & AFATFS_FILE_MODE_RETAIN_DIRECTORY) != 0) {
+        descriptor = afatfs_findCacheSector(file->directoryEntryPos.sectorNumberPhysical);
 
-        file->type = AFATFS_FILE_TYPE_NONE;
-        file->operation.operation = AFATFS_FILE_OPERATION_NONE;
+        if (descriptor) {
+            descriptor->retainCount = MAX(descriptor->retainCount - 1, 0);
+        }
+    }
+
+    afatfs_fileUnlockCacheSector(file);
+
+    file->type = AFATFS_FILE_TYPE_NONE;
+    file->operation.operation = AFATFS_FILE_OPERATION_NONE;
+
+    if (opState->callback) {
+        opState->callback();
     }
 }
 
@@ -2369,7 +2379,7 @@ static void afatfs_closeFileContinue(afatfsFilePtr_t file)
  * Returns true if an operation was successfully queued to close the file and destroy the file handle. If this function
  * returns true then you should not make any further calls to the file (the handle might be reused for a new file).
  */
-bool afatfs_fclose(afatfsFilePtr_t file)
+bool afatfs_fclose(afatfsFilePtr_t file, afatfsCallback_t callback)
 {
     if (!file || file->type == AFATFS_FILE_TYPE_NONE) {
         return true;
@@ -2377,6 +2387,7 @@ bool afatfs_fclose(afatfsFilePtr_t file)
         return false;
     } else {
         file->operation.operation = AFATFS_FILE_OPERATION_CLOSE;
+        file->operation.state.closeFile.callback = callback;
         afatfs_closeFileContinue(file);
         return true;
     }
@@ -3011,11 +3022,11 @@ bool afatfs_destroy()
     // Don't attempt detailed cleanup if the filesystem is in an odd state
     if (afatfs.filesystemState == AFATFS_FILESYSTEM_STATE_READY) {
 #ifdef AFATFS_USE_FREEFILE
-        afatfs_fclose(&afatfs.freeFile);
+        afatfs_fclose(&afatfs.freeFile, NULL);
 #endif
 
         for (int i = 0; i < AFATFS_MAX_OPEN_FILES; i++) {
-            afatfs_fclose(&afatfs.openFiles[i]);
+            afatfs_fclose(&afatfs.openFiles[i], NULL);
         }
 
         afatfs_poll();

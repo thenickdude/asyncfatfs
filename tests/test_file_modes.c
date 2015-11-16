@@ -7,8 +7,9 @@
 #include "sdcard.h"
 #include "asyncfatfs.h"
 
+#include "common.h"
+
 #define LOG_ENTRY_COUNT 1000
-#define TEST_LOG_ENTRY_SIZE 16
 
 typedef enum {
     TEST_STAGE_INITIAL = 0,
@@ -35,14 +36,6 @@ static afatfsFilePtr_t testFile;
 
 static uint32_t logEntryIndex = 0;
 static uint32_t logFileSize;
-
-static void testAssert(bool condition, const char *errorMessage)
-{
-    if (!condition) {
-        fprintf(stderr, "%s\n", errorMessage);
-        exit(-1);
-    }
-}
 
 void logFileCreatedForSolidAppend(afatfsFilePtr_t file)
 {
@@ -114,63 +107,6 @@ void logFileOpenedForWrite(afatfsFilePtr_t file)
     testStage = TEST_STAGE_WRITE_CLOSE;
 }
 
-/**
- * Write test log entries to the given file, starting from *entryIndex. Increments *entryIndex to keep track of the
- * progress so far until it reaches targetEntries.
- *
- * Keep calling until it returns true.
- */
-bool writeLogTestEntries(afatfsFilePtr_t file, uint32_t *entryIndex, uint32_t targetEntries) {
-    uint8_t testBuffer[TEST_LOG_ENTRY_SIZE];
-
-    while (*entryIndex < targetEntries) {
-        for (int i = 0; i < TEST_LOG_ENTRY_SIZE; i++) {
-            testBuffer[i] = *entryIndex;
-        }
-
-        uint32_t writtenBytes = afatfs_fwrite(file, (uint8_t*) testBuffer, TEST_LOG_ENTRY_SIZE);
-
-        if (writtenBytes == 0) {
-            testAssert(!afatfs_isFull(), "Device filled up unexpectedly");
-            return false;
-        } else {
-
-
-            testAssert(writtenBytes == TEST_LOG_ENTRY_SIZE, "Power-of-two sized fwrites not expected to be truncated during writing");
-            (*entryIndex)++;
-        }
-    }
-
-    return true;
-}
-
-/**
- * Validate log entries written to the file by writeLogTestEntries.
- *
- * Keep calling until it returns true.
- */
-bool validateLogTestEntries(afatfsFilePtr_t file, uint32_t *entryIndex, uint32_t targetEntries) {
-    uint8_t testBuffer[TEST_LOG_ENTRY_SIZE];
-
-    while (*entryIndex < targetEntries) {
-        uint32_t readBytes = afatfs_fread(file, (uint8_t*) testBuffer, TEST_LOG_ENTRY_SIZE);
-
-        if (readBytes == 0) {
-            return false;
-        } else {
-            testAssert(readBytes == TEST_LOG_ENTRY_SIZE, "Power-of-two sized freads not expected to be truncated during reading");
-
-            for (int i = 0; i < TEST_LOG_ENTRY_SIZE; i++) {
-                testAssert(testBuffer[i] == (uint8_t)(*entryIndex), "Log file content validation failed");
-            }
-
-            (*entryIndex)++;
-        }
-    }
-
-    return true;
-}
-
 bool continueTesting() {
     switch (testStage) {
         case TEST_STAGE_SOLID_APPEND_OPEN:
@@ -189,7 +125,7 @@ bool continueTesting() {
             }
         break;
         case TEST_STAGE_SOLID_APPEND_CLOSE:
-            if (afatfs_fclose(testFile)) {
+            if (afatfs_fclose(testFile, NULL)) {
                 testStage = TEST_STAGE_READ_OPEN;
             }
         break;
@@ -204,7 +140,7 @@ bool continueTesting() {
             }
         break;
         case TEST_STAGE_READ_CLOSE:
-            if (afatfs_fclose(testFile)) {
+            if (afatfs_fclose(testFile, NULL)) {
                 testStage = TEST_STAGE_APPEND_OPEN;
             }
         break;
@@ -223,7 +159,7 @@ bool continueTesting() {
             }
         break;
         case TEST_STAGE_APPEND_CLOSE:
-            if (afatfs_fclose(testFile)) {
+            if (afatfs_fclose(testFile, NULL)) {
                 testStage = TEST_STAGE_READ_WRITE_OPEN;
             }
         break;
@@ -238,7 +174,7 @@ bool continueTesting() {
             }
         break;
         case TEST_STAGE_READ_WRITE_CLOSE:
-            if (afatfs_fclose(testFile)) {
+            if (afatfs_fclose(testFile, NULL)) {
                 testStage = TEST_STAGE_WRITE_OPEN;
             }
         break;
@@ -248,7 +184,7 @@ bool continueTesting() {
             afatfs_fopen("test.txt", "w", logFileOpenedForWrite);
         break;
         case TEST_STAGE_WRITE_CLOSE:
-            if (afatfs_fclose(testFile)) {
+            if (afatfs_fclose(testFile, NULL)) {
                 testStage = TEST_STAGE_COMPLETE;
             }
         break;

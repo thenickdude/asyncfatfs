@@ -35,9 +35,12 @@ typedef enum {
 
 typedef void (*afatfsOperationCallback_t)(bool success);
 typedef void (*afatfsFileCallback_t)(afatfsFilePtr_t file);
+typedef void (*afatfsCallback_t)();
 
 bool afatfs_fopen(const char *filename, const char *mode, afatfsFileCallback_t complete);
-bool afatfs_fclose(afatfsFilePtr_t file);
+bool afatfs_ftruncate(afatfsFilePtr_t file, afatfsFileCallback_t callback);
+bool afatfs_fclose(afatfsFilePtr_t file, afatfsCallback_t callback);
+bool afatfs_funlink(afatfsFilePtr_t file, afatfsCallback_t callback);
 
 bool afatfs_feof(afatfsFilePtr_t file);
 void afatfs_fputc(afatfsFilePtr_t file, uint8_t c);

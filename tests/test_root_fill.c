@@ -8,6 +8,8 @@
 #include "fat_standard.h"
 #include "asyncfatfs.h"
 
+#include "common.h"
+
 #define MAX_TEST_FILES 2000
 
 typedef enum {
@@ -30,7 +32,7 @@ static afatfsFinder_t finder;
 void logFileCreated(afatfsFilePtr_t file)
 {
     if (file) {
-        afatfs_fclose(file);
+        testAssert(afatfs_fclose(file, NULL), "Expected close to be queued successfully");
 
         testLogFileNumber++;
         testStage = TEST_STAGE_CREATE_LOG_FILES;
