@@ -33,7 +33,6 @@ typedef enum {
     AFATFS_SEEK_END,
 } afatfsSeek_e;
 
-typedef void (*afatfsOperationCallback_t)(bool success);
 typedef void (*afatfsFileCallback_t)(afatfsFilePtr_t file);
 typedef void (*afatfsCallback_t)();
 
