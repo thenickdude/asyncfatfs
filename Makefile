@@ -1,4 +1,4 @@
-DEBUG_FLAGS	 = -g3 -ggdb
+DEBUG_FLAGS	 = -g3 -ggdb -DAFATFS_DEBUG
 
 CFLAGS = -O0 \
 	$(DEBUG_FLAGS) \

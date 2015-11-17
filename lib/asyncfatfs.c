@@ -129,6 +129,9 @@ typedef struct afatfsCacheBlockDescriptor_t {
     /*
      * The state of this block must not transition (do not flush to disk, do not discard). This is useful for a sector
      * which is currently being written to by the application (so flushing it would be a waste of time).
+     *
+     * This is a binary state rather than a counter because we assume that only one file will be responsible for the
+     * sectors it locks.
      */
     unsigned locked:1;
 
@@ -661,6 +664,7 @@ bool afatfs_flush()
             if (afatfs.cacheDescriptor[i].state == AFATFS_CACHE_STATE_DIRTY && !afatfs.cacheDescriptor[i].locked) {
                 afatfs_cacheFlushSector(i);
 
+                // That flush will take time to complete so we may as well tell caller to come back later
                 return false;
             }
         }
@@ -1215,6 +1219,9 @@ static afatfsOperationStatus_e afatfs_saveDirectoryEntry(afatfsFilePtr_t file)
     uint8_t *sector;
     afatfsOperationStatus_e result;
 
+    if (file->directoryEntryPos.sectorNumberPhysical == 0)
+        return AFATFS_OPERATION_SUCCESS; // Root directories don't have a directory entry
+
     result = afatfs_cacheSector(file->directoryEntryPos.sectorNumberPhysical, &sector, AFATFS_CACHE_READ | AFATFS_CACHE_WRITE);
 
     if (result == AFATFS_OPERATION_SUCCESS) {
@@ -1610,11 +1617,11 @@ static uint8_t* afatfs_fileLockCursorSectorForWrite(afatfsFilePtr_t file)
 
 
     if (file->writeLockedCacheIndex != -1) {
-        /*uint32_t physicalSector = afatfs_fileGetCursorPhysicalSector(file);
+        uint32_t physicalSector = afatfs_fileGetCursorPhysicalSector(file);
 
         if (!afatfs_assert(physicalSector == afatfs.cacheDescriptor[file->writeLockedCacheIndex].sectorIndex)) {
             return NULL;
-        }*/
+        }
 
         result = afatfs_cacheSectorGetMemory(file->writeLockedCacheIndex);
     } else {
@@ -2504,12 +2511,12 @@ static void afatfs_closeFileContinue(afatfsFilePtr_t file)
 
     /*
      * Directories don't update their parent directory entries over time, because their fileSize field in the directory
-     * never changes (when we add the first clsuter to the directory we save the directory entry at that point and it
+     * never changes (when we add the first cluster to the directory we save the directory entry at that point and it
      * doesn't change afterwards).
      *
      * So don't bother trying to save their directory entries during fclose().
      */
-    if (file->type != AFATFS_FILE_TYPE_DIRECTORY) {
+    if (file->type != AFATFS_FILE_TYPE_DIRECTORY && file->type != AFATFS_FILE_TYPE_FAT16_ROOT_DIRECTORY) {
         if (afatfs_saveDirectoryEntry(file) != AFATFS_OPERATION_SUCCESS) {
             return;
         }
@@ -2606,6 +2613,8 @@ bool afatfs_chdir(afatfsFilePtr_t directory)
         afatfs.currentDirectory.directoryEntry.firstClusterHigh = afatfs.rootDirectoryCluster >> 16;
         afatfs.currentDirectory.directoryEntry.firstClusterLow = afatfs.rootDirectoryCluster & 0xFFFF;
         afatfs.currentDirectory.directoryEntry.attrib = FAT_FILE_ATTRIBUTE_DIRECTORY;
+
+        // Root directories don't have a directory entry to represent themselves:
         afatfs.currentDirectory.directoryEntryPos.sectorNumberPhysical = 0;
 
         afatfs_fseek(&afatfs.currentDirectory, 0, AFATFS_SEEK_SET);
@@ -3151,27 +3160,45 @@ void afatfs_init()
  */
 bool afatfs_destroy()
 {
-    // Don't attempt detailed cleanup if the filesystem is in an odd state
+    // Only attempt detailed cleanup if the filesystem is in reasonable looking state
     if (afatfs.filesystemState == AFATFS_FILESYSTEM_STATE_READY) {
-#ifdef AFATFS_USE_FREEFILE
-        afatfs_fclose(&afatfs.freeFile, NULL);
-#endif
+        int openFileCount = 0;
 
         for (int i = 0; i < AFATFS_MAX_OPEN_FILES; i++) {
-            afatfs_fclose(&afatfs.openFiles[i], NULL);
-        }
-
-        afatfs_poll();
-
-        for (int i = 0; i < AFATFS_NUM_CACHE_SECTORS; i++) {
-            // Flush even if the pages are "locked"
-            if (afatfs.cacheDescriptor[i].state == AFATFS_CACHE_STATE_DIRTY) {
-                if (afatfs_cacheFlushSector(i)) {
-                    // Card will be busy making that write so don't bother trying to flush any other pages right now
-                    return false;
-                }
+            if (afatfs.openFiles[i].type != AFATFS_FILE_TYPE_NONE) {
+                afatfs_fclose(&afatfs.openFiles[i], NULL);
+                openFileCount++;
             }
         }
+
+#ifdef AFATFS_USE_FREEFILE
+        if (afatfs.freeFile.type != AFATFS_FILE_TYPE_NONE) {
+            afatfs_fclose(&afatfs.freeFile, NULL);
+            openFileCount++;
+        }
+#endif
+        if (afatfs.currentDirectory.type != AFATFS_FILE_TYPE_NONE) {
+            afatfs_fclose(&afatfs.currentDirectory, NULL);
+            openFileCount++;
+        }
+
+        if (!afatfs_flush()) {
+            afatfs_poll();
+            return false;
+        }
+
+        if (openFileCount > 0) {
+            return false;
+        }
+
+#ifdef AFATFS_DEBUG
+        /* All sector locks should have been released by closing the files, so the subsequent flush should have written
+         * all dirty pages to disk. If not, something's wrong:
+         */
+        for (int i = 0; i < AFATFS_NUM_CACHE_SECTORS; i++) {
+            afatfs_assert(afatfs.cacheDescriptor[i].state != AFATFS_CACHE_STATE_DIRTY);
+        }
+#endif
     }
 
     // Clear the afatfs so it's as if we never ran
