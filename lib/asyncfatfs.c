@@ -3043,7 +3043,7 @@ static void afatfs_initContinue()
                     afatfs_chdir(NULL);
 
 #ifdef AFATFS_USE_FREEFILE
-                    afatfs_createFile(&afatfs.freeFile, AFATFS_FREESPACE_FILENAME, FAT_FILE_ATTRIBUTE_SYSTEM,
+                    afatfs_createFile(&afatfs.freeFile, AFATFS_FREESPACE_FILENAME, FAT_FILE_ATTRIBUTE_SYSTEM | FAT_FILE_ATTRIBUTE_READ_ONLY,
                         AFATFS_FILE_MODE_CREATE | AFATFS_FILE_MODE_RETAIN_DIRECTORY, afatfs_freeFileCreated);
                     afatfs.initPhase = AFATFS_INITIALIZATION_FREEFILE_CREATING;
 #else
