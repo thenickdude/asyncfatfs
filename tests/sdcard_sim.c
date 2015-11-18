@@ -85,6 +85,19 @@ static void sdcard_continueReadBlock()
 static void sdcard_continueWriteBlock()
 {
     if (--currentOperation.countdownTimer <= 0) {
+        uint64_t byteIndex = (uint64_t) currentOperation.blockIndex * SDCARD_SIM_BLOCK_SIZE;
+
+        fseeko(simFile, byteIndex, SEEK_SET);
+
+        if (fwrite(currentOperation.buffer, sizeof(uint8_t), SDCARD_SIM_BLOCK_SIZE, simFile) == SDCARD_SIM_BLOCK_SIZE) {
+            if (currentOperation.callback) {
+                currentOperation.callback(SDCARD_BLOCK_OPERATION_WRITE, currentOperation.blockIndex, currentOperation.buffer, currentOperation.callbackData);
+            }
+        } else {
+            fprintf(stderr, "SDCardSim: fwrite failed on underlying file\n");
+            exit(-1);
+        }
+
         sdcardState = SDCARD_STATE_READY;
     }
 }
@@ -116,7 +129,7 @@ bool sdcard_readBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationComp
     return true;
 }
 
-bool sdcard_writeBlock(uint32_t blockIndex, uint8_t *buffer)
+bool sdcard_writeBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationCompleteCallback_c callback, uint32_t callbackData)
 {
     uint64_t byteIndex = (uint64_t) blockIndex * SDCARD_SIM_BLOCK_SIZE;
 
@@ -128,18 +141,17 @@ bool sdcard_writeBlock(uint32_t blockIndex, uint8_t *buffer)
         exit(-1);
     }
 
-    fseeko(simFile, byteIndex, SEEK_SET);
-
-    if (fwrite(buffer, sizeof(uint8_t), SDCARD_SIM_BLOCK_SIZE, simFile) != SDCARD_SIM_BLOCK_SIZE) {
-        fprintf(stderr, "SDCardSim: fwrite failed on underlying file\n");
-        exit(-1);
-    }
-
     /*
-     * Just like the real SD card would, we'll go busy for a period while the write completes.
+     * Just like the real SD card will, we will defer this write till later, so the operation won't be done yet when
+     * this routine returns.
      */
     sdcardState = SDCARD_STATE_WRITING;
+
     currentOperation.countdownTimer = SDCARD_SIM_WRITE_DELAY;
+    currentOperation.buffer = buffer;
+    currentOperation.blockIndex = blockIndex;
+    currentOperation.callback = callback;
+    currentOperation.callbackData = callbackData;
 
     return true;
 }

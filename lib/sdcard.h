@@ -29,6 +29,6 @@ typedef void(*sdcard_operationCompleteCallback_c)(sdcardBlockOperation_e operati
 
 bool sdcard_init();
 bool sdcard_readBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationCompleteCallback_c callback, uint32_t callbackData);
-bool sdcard_writeBlock(uint32_t blockIndex, uint8_t *buffer);
+bool sdcard_writeBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationCompleteCallback_c callback, uint32_t callbackData);
 void sdcard_poll();
 
