@@ -5,18 +5,24 @@
 
 #include "sdcard_sim.h"
 #include "sdcard.h"
-#include "sdcard_standard.h"
 #include "asyncfatfs.h"
+
+#include "common.h"
+
+#define TEST_LOGS_TO_WRITE 50
+
+// Attempt to write about 1MB of log per file
+#define LOG_ENTRY_COUNT 35000
 
 typedef enum {
     TEST_STAGE_INIT = 0,
-    TEST_STAGE_CREATE_TEST_DIRECTORY = 0,
-    TEST_STAGE_CREATE_LOG_DIRECTORY,
+    TEST_STAGE_CREATE_LOG_DIRECTORY = 0,
     TEST_STAGE_CREATE_LOG_FILE,
     TEST_STAGE_WRITE_LOG,
     TEST_STAGE_CLOSE_LOG,
     TEST_STAGE_OPEN_LOG_FOR_READ,
     TEST_STAGE_READ_LOG,
+    TEST_STAGE_READ_LOG_CLOSE,
     TEST_STAGE_IDLE,
     TEST_STAGE_COMPLETE
 } testStage_e;
@@ -24,42 +30,24 @@ typedef enum {
 static testStage_e testStage = TEST_STAGE_INIT;
 static afatfsFilePtr_t testFile;
 
-static int testWriteMax = 10000;
-static int testWriteCount = 0;
-static int testLogFileNumber = 0;
+static uint32_t writeLogFileNumber, readLogFileNumber;
+static uint32_t writeLogEntryCount, readLogEntryCount;
 
-void printFSState(afatfsFilesystemState_e state)
+static bool shouldKeepLog(uint32_t logNumber)
 {
-    switch (state) {
-       case AFATFS_FILESYSTEM_STATE_UNKNOWN:
-           printf("Filesystem in unknown state\n");
-       break;
-       case AFATFS_FILESYSTEM_STATE_READY:
-           printf("Filesystem online!\n");
-       break;
-       case AFATFS_FILESYSTEM_STATE_FATAL:
-           printf("Fatal error\n");
-           exit(-1);
-       break;
-       case AFATFS_FILESYSTEM_STATE_INITIALIZATION:
-           printf(".");
-       break;
-       default:
-           printf("Filesystem in unknown state %d!\n", (int) state);
-       break;
-   }
+    // Use something like a LCG with the logNumber as the seed to decide to keep 1/2 logs (and delete the remainder)
+    return ((uint32_t) (logNumber * 1103515245 + 12345) & 0x02) != 0;
 }
 
-void logFileCreatedForWrite(afatfsFilePtr_t file)
+void logFileCreatedForSolidAppend(afatfsFilePtr_t file)
 {
     if (file) {
         testFile = file;
 
         testStage = TEST_STAGE_WRITE_LOG;
-        fprintf(stderr, "Log file LOG%05d.TXT created\n", testLogFileNumber);
     } else {
-        fprintf(stderr, "Creating testfile failed\n");
-        testStage = TEST_STAGE_COMPLETE;
+        // Retry
+        testStage = TEST_STAGE_CREATE_LOG_FILE;
     }
 }
 
@@ -72,48 +60,38 @@ void logDirCreated(afatfsFilePtr_t dir)
 
     afatfs_chdir(dir);
 
-    afatfs_fclose(dir);
+    testAssert(afatfs_fclose(dir, NULL), "Expected to be able to close idle directory immediately");
 
     testStage = TEST_STAGE_CREATE_LOG_FILE;
 }
 
-void testDirCreated(afatfsFilePtr_t dir)
-{
-    if (!dir) {
-        fprintf(stderr, "Creating 'test' directory failed\n");
-        exit(EXIT_FAILURE);
-    }
-
-    afatfs_fclose(dir);
-
-    testStage = TEST_STAGE_CREATE_LOG_DIRECTORY;
-}
-
 void logFileOpenedForRead(afatfsFilePtr_t file)
 {
-    if (file) {
-        testFile = file;
+    if (shouldKeepLog(readLogFileNumber)) {
+        if (file) {
+            testFile = file;
 
-        testStage = TEST_STAGE_READ_LOG;
-        fprintf(stderr, "Log file LOG%05d.TXT opened for read\n", testLogFileNumber);
+            testStage = TEST_STAGE_READ_LOG;
+        } else {
+            fprintf(stderr, "Opening log for read failed\n");
+            exit(-1);
+        }
     } else {
-        fprintf(stderr, "Opening log for read failed\n");
-        testStage = TEST_STAGE_COMPLETE;
+        if (file) {
+            fprintf(stderr, "Log that ought to have been deleted was openable!\n");
+            exit(-1);
+        } else {
+            testStage = TEST_STAGE_OPEN_LOG_FOR_READ;
+        }
     }
 }
 
 
 bool continueTesting() {
-    char testBuffer[64];
     char filename[13];
-    uint32_t readCount;
 
+    doMore:
     switch (testStage) {
-        case TEST_STAGE_CREATE_TEST_DIRECTORY:
-            testStage = TEST_STAGE_IDLE;
-
-            afatfs_mkdir("test", testDirCreated);
-        break;
         case TEST_STAGE_CREATE_LOG_DIRECTORY:
             // Create a subdirectory for logging
 
@@ -122,76 +100,89 @@ bool continueTesting() {
              * set by the callback:
              */
             testStage = TEST_STAGE_IDLE;
+            writeLogFileNumber = 0;
 
             afatfs_mkdir("logs", logDirCreated);
         break;
         case TEST_STAGE_CREATE_LOG_FILE:
-            testLogFileNumber++;
+            writeLogFileNumber++;
 
-            if (testLogFileNumber >= 1000) {
+            if (writeLogFileNumber >= TEST_LOGS_TO_WRITE) {
+                testStage = TEST_STAGE_OPEN_LOG_FOR_READ;
+                readLogFileNumber = 0;
+            } else {
+                testStage = TEST_STAGE_IDLE;
+
+                writeLogEntryCount = 0;
+
+                // Write a file in contigous-append mode
+                sprintf(filename, "LOG%05d.TXT", writeLogFileNumber);
+
+                afatfs_fopen(filename, "as", logFileCreatedForSolidAppend);
+            }
+        break;
+        case TEST_STAGE_WRITE_LOG:
+            if (writeLogTestEntries(testFile, &writeLogEntryCount, LOG_ENTRY_COUNT)) {
+                testStage = TEST_STAGE_CLOSE_LOG;
+            } else if (afatfs_isFull()) {
+                testStage = TEST_STAGE_CLOSE_LOG;
+            }
+        break;
+        case TEST_STAGE_CLOSE_LOG:
+            /* Wait for the file close operation to queue on the file, but just like Blackbox, don't wait for the close
+             * operation to complete before continuing on to open more files.
+             */
+            if (shouldKeepLog(writeLogFileNumber)) {
+                if (!afatfs_fclose(testFile, NULL)) {
+                    break;
+                }
+            } else {
+                if (!afatfs_funlink(testFile, NULL)) {
+                    break;
+                }
+            }
+
+            testFile = NULL;
+
+            testStage = TEST_STAGE_CREATE_LOG_FILE;
+            goto doMore;
+        break;
+        case TEST_STAGE_OPEN_LOG_FOR_READ:
+            readLogFileNumber++;
+
+            if (readLogFileNumber == writeLogFileNumber) {
                 testStage = TEST_STAGE_COMPLETE;
             } else {
                 testStage = TEST_STAGE_IDLE;
 
-                testWriteCount = 0;
+                readLogEntryCount = 0;
 
-                // Write a file in contigous-append mode
-                sprintf(filename, "LOG%05d.TXT", testLogFileNumber);
+                sprintf(filename, "LOG%05d.TXT", readLogFileNumber);
 
-                afatfs_fopen(filename, "as", logFileCreatedForWrite);
+                afatfs_fopen(filename, "r", logFileOpenedForRead);
             }
-        break;
-        case TEST_STAGE_WRITE_LOG:
-            if (testWriteCount >= testWriteMax) {
-                testStage = TEST_STAGE_CLOSE_LOG;
-            } else {
-                sprintf(testBuffer, "Log %05d entry %5d/%5d\n", testLogFileNumber, testWriteCount + 1, testWriteMax);
-
-                uint32_t writtenBytes;
-
-                writtenBytes = afatfs_fwrite(testFile, (uint8_t*) testBuffer, strlen(testBuffer));
-
-                if (writtenBytes > 0) {
-                    testWriteCount++;
-                    if (writtenBytes < strlen(testBuffer)) {
-                        // fprintf(stderr, "Write of %u bytes truncated to %u.\n", (unsigned) strlen(testBuffer), (unsigned) writtenBytes);
-                    }
-                } else if (afatfs_isFull()) {
-                    testStage = TEST_STAGE_CLOSE_LOG;
-                }
-            }
-        break;
-        case TEST_STAGE_CLOSE_LOG:
-            // We're okay to close without waiting for the write to complete
-            afatfs_fclose(testFile);
-            if (afatfs_isFull()) {
-                testStage = TEST_STAGE_OPEN_LOG_FOR_READ;
-            } else {
-                testStage = TEST_STAGE_CREATE_LOG_FILE;
-            }
-        break;
-        case TEST_STAGE_OPEN_LOG_FOR_READ:
-            testStage = TEST_STAGE_IDLE;
-
-            testLogFileNumber = 1;
-            sprintf(filename, "LOG%05d.TXT", testLogFileNumber);
-
-            afatfs_fopen(filename, "r", logFileOpenedForRead);
         break;
         case TEST_STAGE_READ_LOG:
-            readCount = afatfs_fread(testFile, (uint8_t*)testBuffer, sizeof(testBuffer));
-
-            if (readCount == 0 && afatfs_feof(testFile)) {
-                afatfs_fclose(testFile);
-                testStage = TEST_STAGE_COMPLETE;
-            } else {
-                printf("%.*s", readCount, testBuffer);
+            if (validateLogTestEntries(testFile, &readLogEntryCount, LOG_ENTRY_COUNT)) {
+                testStage = TEST_STAGE_READ_LOG_CLOSE;
+                goto doMore;
+            }
+        break;
+        case TEST_STAGE_READ_LOG_CLOSE:
+            if (afatfs_fclose(testFile, NULL)) {
+                sprintf(filename, "LOG%05d.TXT", readLogFileNumber);
+                testFile = NULL;
+                testStage = TEST_STAGE_OPEN_LOG_FOR_READ;
+                goto doMore;
             }
         break;
         case TEST_STAGE_IDLE:
             // Waiting for file operations...
         break;
         case TEST_STAGE_COMPLETE:
+            fprintf(stderr, "[Success]  Logged %u bytes in %u files in simulated logging workload\n",
+                TEST_LOG_ENTRY_SIZE * LOG_ENTRY_COUNT * writeLogFileNumber, writeLogFileNumber);
+
             return false;
     }
 
@@ -199,9 +190,14 @@ bool continueTesting() {
     return true;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
-    if (!sdcard_sim_init("simcard.dmg")) {
+    if (argc < 2) {
+        fprintf(stderr, "Missing argument for sdcard image filename\n");
+        return EXIT_FAILURE;
+    }
+
+    if (!sdcard_sim_init(argv[1])) {
         fprintf(stderr, "sdcard_sim_init() failed\n");
         return EXIT_FAILURE;
     }
@@ -212,27 +208,26 @@ int main(void)
     }
 
     afatfs_init();
-    printf("Filesystem is initting");
 
-    afatfsFilesystemState_e state = AFATFS_FILESYSTEM_STATE_UNKNOWN;
+    bool keepGoing = true;
 
-    while (1) {
+    while (keepGoing) {
         afatfs_poll();
 
-        // Report a change in FS state if needed
-        if (afatfs_getFilesystemState() != state) {
-            state = afatfs_getFilesystemState();
-            printFSState(state);
-        }
-
-        if (state == AFATFS_FILESYSTEM_STATE_READY) {
-            if (!continueTesting()) {
-                break;
-            }
+        switch (afatfs_getFilesystemState()) {
+            case AFATFS_FILESYSTEM_STATE_READY:
+                if (!continueTesting()) {
+                    keepGoing = false;
+                    break;
+                }
+           break;
+           case AFATFS_FILESYSTEM_STATE_FATAL:
+                fprintf(stderr, "[Fail]     Fatal filesystem error\n");
+                exit(-1);
+           default:
+               ;
         }
     }
-
-    printf("Flushing and shutting down...\n");
 
     while (!afatfs_destroy()) {
     }

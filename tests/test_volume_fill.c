@@ -193,7 +193,7 @@ bool continueTesting() {
             // Waiting for file operations...
         break;
         case TEST_STAGE_COMPLETE:
-            fprintf(stderr, "[Success]  Logged %u bytes in %u files to fill the device\n", writtenBytesTotal, writeLogFileNumber);
+            fprintf(stderr, "[Success]  Wrote %u bytes in %u files to fill the device\n", writtenBytesTotal, writeLogFileNumber);
             return false;
     }
 
