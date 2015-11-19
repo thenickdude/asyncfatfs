@@ -2024,7 +2024,7 @@ static afatfsOperationStatus_e afatfs_extendSubdirectoryContinue(afatfsFile_t *d
                 memset(sectorBuffer, 0, AFATFS_SECTOR_SIZE);
 
                 // If this is the first sector of a non-root directory, create the "." and ".." entries
-                if (afatfs.currentDirectory.directoryEntryPos.sectorNumberPhysical != 0 && directory->cursorOffset == 0) {
+                if (directory->directoryEntryPos.sectorNumberPhysical != 0 && directory->cursorOffset == 0) {
                     fatDirectoryEntry_t *dirEntries = (fatDirectoryEntry_t *) sectorBuffer;
 
                     memset(dirEntries[0].filename, ' ', sizeof(dirEntries[0].filename));
@@ -2484,6 +2484,10 @@ static void afatfs_funlinkContinue(afatfsFilePtr_t file)
 bool afatfs_funlink(afatfsFilePtr_t file, afatfsCallback_t callback)
 {
     afatfsUnlinkFile_t *opState = &file->operation.state.unlinkFile;
+
+    if (!file || file->type == AFATFS_FILE_TYPE_NONE) {
+        return true;
+    }
 
     /*
      * Internally an unlink is implemented by first doing a ftruncate(), marking the directory entry as deleted,
