@@ -129,12 +129,12 @@ bool sdcard_readBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationComp
     return true;
 }
 
-bool sdcard_writeBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationCompleteCallback_c callback, uint32_t callbackData)
+sdcardOperationStatus_e sdcard_writeBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationCompleteCallback_c callback, uint32_t callbackData)
 {
     uint64_t byteIndex = (uint64_t) blockIndex * SDCARD_SIM_BLOCK_SIZE;
 
     if (sdcardState != SDCARD_STATE_READY)
-        return false;
+        return SDCARD_OPERATION_BUSY;
 
     if (byteIndex >= sdcardCapacity) {
         fprintf(stderr, "SDCardSim: Attempted to write to block at %" PRIu64 " but capacity is %" PRIu64 "\n", byteIndex, sdcardCapacity);
@@ -153,7 +153,7 @@ bool sdcard_writeBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationCom
     currentOperation.callback = callback;
     currentOperation.callbackData = callbackData;
 
-    return true;
+    return SDCARD_OPERATION_IN_PROGRESS;
 }
 
 void sdcard_poll()
