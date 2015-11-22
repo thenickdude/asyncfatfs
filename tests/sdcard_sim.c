@@ -46,6 +46,8 @@ bool sdcard_sim_init(const char *filename)
 
     fseek(simFile, 0, SEEK_SET);
 
+    sdcardState = SDCARD_STATE_READY;
+
     return true;
 }
 
@@ -53,13 +55,6 @@ void sdcard_sim_destroy()
 {
     fclose(simFile);
     sdcardState = SDCARD_STATE_NOT_PRESENT;
-}
-
-bool sdcard_init()
-{
-    sdcardState = SDCARD_STATE_READY;
-
-    return true;
 }
 
 static void sdcard_continueReadBlock()
@@ -176,9 +171,4 @@ void sdcard_poll()
         default:
             ;
     }
-}
-
-bool sdcard_isReady()
-{
-    return sdcardState == SDCARD_STATE_READY;
 }

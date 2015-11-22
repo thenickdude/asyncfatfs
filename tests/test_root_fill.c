@@ -129,11 +129,6 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    if (!sdcard_init()) {
-        fprintf(stderr, "sdcard_init() failed\n");
-        return EXIT_FAILURE;
-    }
-
     afatfs_init();
 
     bool keepGoing = true;
