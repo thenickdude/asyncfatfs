@@ -97,4 +97,4 @@ tests/test_file_delete : $(AFATFS_SOURCE) $(TEST_SOURCE) tests/test_file_delete.
 tests/test_logging_workload : $(AFATFS_SOURCE) $(TEST_SOURCE) tests/test_logging_workload.c
 
 clean :
-	rm -f tests/test_root_fill tests/test_subdir_fill tests/test_volume_fill tests/test_file_modes tests/test_file_delete
+	rm -f tests/test_root_fill tests/test_subdir_fill tests/test_volume_fill tests/test_file_modes tests/test_file_delete tests/test_logging_workload

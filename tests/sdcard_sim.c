@@ -109,6 +109,10 @@ bool sdcard_readBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationComp
     if (sdcardState != SDCARD_STATE_READY)
         return false;
 
+#ifdef AFATFS_DEBUG_VERBOSE
+    fprintf(stderr, "SD card - Read %u\n", blockIndex);
+#endif
+
     if (byteIndex >= sdcardCapacity) {
         fprintf(stderr, "SDCardSim: Attempted to read from %" PRIu64 " but capacity is %" PRIu64 "\n", byteIndex, sdcardCapacity);
         exit(-1);
@@ -135,6 +139,10 @@ sdcardOperationStatus_e sdcard_writeBlock(uint32_t blockIndex, uint8_t *buffer, 
 
     if (sdcardState != SDCARD_STATE_READY)
         return SDCARD_OPERATION_BUSY;
+
+#ifdef AFATFS_DEBUG_VERBOSE
+    fprintf(stderr, "SD card - Write %u\n", blockIndex);
+#endif
 
     if (byteIndex >= sdcardCapacity) {
         fprintf(stderr, "SDCardSim: Attempted to write to block at %" PRIu64 " but capacity is %" PRIu64 "\n", byteIndex, sdcardCapacity);
@@ -172,5 +180,5 @@ void sdcard_poll()
 
 bool sdcard_isReady()
 {
-    return false;
+    return sdcardState == SDCARD_STATE_READY;
 }
