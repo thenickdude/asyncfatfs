@@ -578,6 +578,7 @@ static void afatfs_sdcardWriteComplete(sdcardBlockOperation_e operation, uint32_
             if (buffer == NULL) {
                 // Write failed, remark the sector as dirty
                 afatfs.cacheDescriptor[i].state = AFATFS_CACHE_STATE_DIRTY;
+                afatfs.cacheDirtyEntries++;
             } else {
                 afatfs_assert(afatfs_cacheSectorGetMemory(i) == buffer);
 
