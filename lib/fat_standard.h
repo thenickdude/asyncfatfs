@@ -30,6 +30,9 @@
 #define FAT_FILENAME_LENGTH 11
 #define FAT_DELETED_FILE_MARKER 0xE5
 
+#define FAT_MAKE_DATE(year, month, day)     (day | (month << 5) | ((year - 1980) << 9))
+#define FAT_MAKE_TIME(hour, minute, second) ((second / 2) | (minute << 5) | (hour << 11))
+
 typedef enum {
     FAT_FILESYSTEM_TYPE_INVALID,
     FAT_FILESYSTEM_TYPE_FAT12,

@@ -35,6 +35,9 @@
 
 #define AFATFS_MAX_OPEN_FILES 3
 
+#define AFATFS_DEFAULT_FILE_DATE FAT_MAKE_DATE(2015, 12, 01)
+#define AFATFS_DEFAULT_FILE_TIME FAT_MAKE_TIME(00, 00, 00)
+
 #define AFATFS_FILES_PER_DIRECTORY_SECTOR (AFATFS_SECTOR_SIZE / sizeof(fatDirectoryEntry_t))
 
 #define AFATFS_FAT32_FAT_ENTRIES_PER_SECTOR  (AFATFS_SECTOR_SIZE / sizeof(uint32_t))
@@ -2407,6 +2410,11 @@ static void afatfs_createFileContinue(afatfsFile_t *file)
             status = afatfs_allocateDirectoryEntry(&afatfs.currentDirectory, &entry, &file->directoryEntryPos);
 
             if (status == AFATFS_OPERATION_SUCCESS) {
+                file->directoryEntry.creationDate = AFATFS_DEFAULT_FILE_DATE;
+                file->directoryEntry.creationTime = AFATFS_DEFAULT_FILE_TIME;
+                file->directoryEntry.lastWriteDate = AFATFS_DEFAULT_FILE_DATE;
+                file->directoryEntry.lastWriteTime = AFATFS_DEFAULT_FILE_TIME;
+
                 memcpy(entry, &file->directoryEntry, sizeof(file->directoryEntry));
 
 #ifdef AFATFS_DEBUG_VERBOSE
