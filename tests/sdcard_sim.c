@@ -159,6 +159,11 @@ sdcardOperationStatus_e sdcard_writeBlock(uint32_t blockIndex, uint8_t *buffer, 
     return SDCARD_OPERATION_IN_PROGRESS;
 }
 
+bool sdcard_sim_isReady()
+{
+    return sdcardState == SDCARD_STATE_READY;
+}
+
 void sdcard_poll()
 {
     switch (sdcardState) {

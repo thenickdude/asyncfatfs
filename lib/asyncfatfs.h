@@ -57,7 +57,7 @@ void afatfs_findLast(afatfsFilePtr_t directory);
 
 bool afatfs_flush();
 void afatfs_init();
-bool afatfs_destroy();
+bool afatfs_destroy(bool dirty);
 void afatfs_poll();
 
 uint32_t afatfs_getFreeBufferSpace();

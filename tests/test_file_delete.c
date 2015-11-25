@@ -182,7 +182,7 @@ int main(int argc, char **argv)
         }
     }
 
-    while (!afatfs_destroy()) {
+    while (!afatfs_destroy(false)) {
     }
 
     sdcard_sim_destroy();

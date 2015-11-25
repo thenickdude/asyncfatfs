@@ -1,6 +1,7 @@
 DEBUG_FLAGS	 = -g3 -ggdb -DAFATFS_DEBUG
 
 CFLAGS = -O0 \
+	-m32 \
 	$(DEBUG_FLAGS) \
 	-std=gnu99 \
 	-Wall -pedantic -Wextra -Wshadow \
@@ -14,7 +15,7 @@ SDCARD_TEMP_FILE = tests/sdcard_temp.dmg
 
 all: test-binaries
 
-test-binaries: tests/test_root_fill tests/test_subdir_fill tests/test_volume_fill tests/test_file_modes tests/test_file_delete tests/test_logging_workload
+test-binaries: tests/test_root_fill tests/test_subdir_fill tests/test_volume_fill tests/test_file_modes tests/test_file_delete tests/test_logging_workload tests/test_file_size tests/test_file_size_powerloss
 
 test-long : test
 	@echo ""
@@ -54,6 +55,12 @@ test : test-binaries
 	
 	@gunzip --stdout images/blank_fat16_100mb.dmg.gz > $(SDCARD_TEMP_FILE)
 	@tests/test_file_delete $(SDCARD_TEMP_FILE)
+	
+	@gunzip --stdout images/blank_fat16_100mb.dmg.gz > $(SDCARD_TEMP_FILE)
+	@tests/test_file_size $(SDCARD_TEMP_FILE)
+
+	@gunzip --stdout images/blank_fat16_100mb.dmg.gz > $(SDCARD_TEMP_FILE)
+	@tests/test_file_size_powerloss $(SDCARD_TEMP_FILE)
 	
 	@echo ""
 	@echo "Testing with 2GB FAT16 volume"
@@ -95,6 +102,8 @@ tests/test_volume_fill : $(AFATFS_SOURCE) $(TEST_SOURCE) tests/test_volume_fill.
 tests/test_file_modes : $(AFATFS_SOURCE) $(TEST_SOURCE) tests/test_file_modes.c
 tests/test_file_delete : $(AFATFS_SOURCE) $(TEST_SOURCE) tests/test_file_delete.c
 tests/test_logging_workload : $(AFATFS_SOURCE) $(TEST_SOURCE) tests/test_logging_workload.c
+tests/test_file_size : $(AFATFS_SOURCE) $(TEST_SOURCE) tests/test_file_size.c
+tests/test_file_size_powerloss : $(AFATFS_SOURCE) $(TEST_SOURCE) tests/test_file_size_powerloss.c
 
 clean :
-	rm -f tests/test_root_fill tests/test_subdir_fill tests/test_volume_fill tests/test_file_modes tests/test_file_delete tests/test_logging_workload
+	rm -f tests/test_root_fill tests/test_subdir_fill tests/test_volume_fill tests/test_file_modes tests/test_file_delete tests/test_logging_workload tests/test_file_size tests/test_file_size_powerloss
