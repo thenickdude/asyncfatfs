@@ -420,6 +420,8 @@ typedef struct afatfs_t {
     afatfsFile_t freeFile;
 #endif
 
+    afatfsError_e lastError;
+
     bool filesystemFull;
 
     // The current working directory:
@@ -483,6 +485,9 @@ static bool isPowerOfTwo(unsigned int x)
 static bool afatfs_assert(bool condition)
 {
     if (!condition) {
+        if (afatfs.lastError == AFATFS_ERROR_NONE) {
+            afatfs.lastError = AFATFS_ERROR_GENERIC;
+        }
         afatfs.filesystemState = AFATFS_FILESYSTEM_STATE_FATAL;
 #ifdef AFATFS_DEBUG
         raise(SIGTRAP);
@@ -925,6 +930,8 @@ static bool afatfs_parseVolumeID(const uint8_t *sector)
 {
     fatVolumeID_t *volume = (fatVolumeID_t *) sector;
 
+    afatfs.filesystemType = FAT_FILESYSTEM_TYPE_INVALID;
+
     if (volume->bytesPerSector != AFATFS_SECTOR_SIZE || volume->numFATs != AFATFS_NUM_FATS
             || sector[510] != FAT_VOLUME_ID_SIGNATURE_1 || sector[511] != FAT_VOLUME_ID_SIGNATURE_2) {
         return false;
@@ -950,7 +957,6 @@ static bool afatfs_parseVolumeID(const uint8_t *sector)
 
     if (afatfs.numClusters <= FAT12_MAX_CLUSTERS) {
         afatfs.filesystemType = FAT_FILESYSTEM_TYPE_FAT12;
-        afatfs.filesystemState = AFATFS_FILESYSTEM_STATE_FATAL;
 
         return false; // FAT12 is not a supported filesystem
     } else if (afatfs.numClusters <= FAT16_MAX_CLUSTERS) {
@@ -969,8 +975,6 @@ static bool afatfs_parseVolumeID(const uint8_t *sector)
     }
 
     afatfs.clusterStartSector = endOfFATs + afatfs.rootDirectorySectors;
-
-    afatfs_chdir(NULL);
 
     return true;
 }
@@ -3228,6 +3232,7 @@ static void afatfs_freeFileCreated(afatfsFile_t *file)
         }
     } else {
         // Failed to allocate an entry
+        afatfs.lastError = AFATFS_ERROR_GENERIC;
         afatfs.filesystemState = AFATFS_FILESYSTEM_STATE_FATAL;
     }
 }
@@ -3251,6 +3256,7 @@ static void afatfs_initContinue()
                     afatfs.initPhase = AFATFS_INITIALIZATION_READ_VOLUME_ID;
                     goto doMore;
                 } else {
+                    afatfs.lastError = AFATFS_ERROR_BAD_MBR;
                     afatfs.filesystemState = AFATFS_FILESYSTEM_STATE_FATAL;
                 }
             }
@@ -3269,6 +3275,7 @@ static void afatfs_initContinue()
                     afatfs.filesystemState = AFATFS_FILESYSTEM_STATE_READY;
 #endif
                 } else {
+                    afatfs.lastError = AFATFS_ERROR_BAD_FILESYSTEM_HEADER;
                     afatfs.filesystemState = AFATFS_FILESYSTEM_STATE_FATAL;
                 }
             }
@@ -3322,6 +3329,7 @@ static void afatfs_initContinue()
 
                 goto doMore;
             } else if (status == AFATFS_OPERATION_FAILURE) {
+                afatfs.lastError = AFATFS_ERROR_GENERIC;
                 afatfs.filesystemState = AFATFS_FILESYSTEM_STATE_FATAL;
             }
         break;
@@ -3331,6 +3339,7 @@ static void afatfs_initContinue()
             if (status == AFATFS_OPERATION_SUCCESS) {
                 afatfs.filesystemState = AFATFS_FILESYSTEM_STATE_READY;
             } else if (status == AFATFS_OPERATION_FAILURE) {
+                afatfs.lastError = AFATFS_ERROR_GENERIC;
                 afatfs.filesystemState = AFATFS_FILESYSTEM_STATE_FATAL;
             }
         break;
@@ -3363,6 +3372,11 @@ void afatfs_poll()
 afatfsFilesystemState_e afatfs_getFilesystemState()
 {
     return afatfs.filesystemState;
+}
+
+afatfsError_e afatfs_getLastError()
+{
+    return afatfs.lastError;
 }
 
 void afatfs_init()
