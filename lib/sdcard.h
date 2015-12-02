@@ -66,6 +66,8 @@ sdcardOperationStatus_e sdcard_writeBlock(uint32_t blockIndex, uint8_t *buffer, 
 
 /**
  * Call periodically for the SD card to perform in-progress transfers.
+ *
+ * Returns true if the card is ready to accept commands.
  */
-void sdcard_poll();
+ bool sdcard_poll();
 

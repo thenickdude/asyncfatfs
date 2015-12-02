@@ -164,7 +164,7 @@ bool sdcard_sim_isReady()
     return sdcardState == SDCARD_STATE_READY;
 }
 
-void sdcard_poll()
+bool sdcard_poll()
 {
     switch (sdcardState) {
         case SDCARD_STATE_READING:
@@ -176,4 +176,6 @@ void sdcard_poll()
         default:
             ;
     }
+
+    return sdcardState == SDCARD_STATE_READY;
 }
