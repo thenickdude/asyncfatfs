@@ -2089,7 +2089,7 @@ afatfsOperationStatus_e afatfs_findNext(afatfsFilePtr_t directory, afatfsFinder_
 }
 
 /**
- * Release resources associated with a find operation.
+ * Release resources associated with a find operation. Calling this more than once is harmless.
  */
 void afatfs_findLast(afatfsFilePtr_t directory)
 {
@@ -2804,13 +2804,17 @@ bool afatfs_mkdir(const char *filename, afatfsFileCallback_t callback)
  */
 bool afatfs_chdir(afatfsFilePtr_t directory)
 {
+    if (afatfs_fileIsBusy(&afatfs.currentDirectory)) {
+        return false;
+    }
+
     if (directory) {
-        if (!afatfs_fileIsBusy(directory)) {
-            memcpy(&afatfs.currentDirectory, directory, sizeof(*directory));
-            return true;
-        } else {
+        if (afatfs_fileIsBusy(directory)) {
             return false;
         }
+
+        memcpy(&afatfs.currentDirectory, directory, sizeof(*directory));
+        return true;
     } else {
         afatfs_initFileHandle(&afatfs.currentDirectory);
 
