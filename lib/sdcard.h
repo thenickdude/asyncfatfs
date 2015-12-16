@@ -69,5 +69,29 @@ sdcardOperationStatus_e sdcard_writeBlock(uint32_t blockIndex, uint8_t *buffer, 
  *
  * Returns true if the card is ready to accept commands.
  */
- bool sdcard_poll();
+bool sdcard_poll();
 
+/**
+ * Begin writing a series of consecutive blocks beginning at the given block index. This will allow (but not require)
+ * the SD card to pre-erase the number of blocks you specifiy, which can allow the writes to complete faster.
+ *
+ * Afterwards, just call sdcard_writeBlock() as normal to write those blocks consecutively.
+ *
+ * The multi-block write will be aborted automatically when writing to a non-consecutive address, or by performing a
+ * read. You can abort it manually by calling sdcard_endWriteBlocks().
+ *
+ * Returns:
+ *     SDCARD_OPERATION_SUCCESS     - Multi-block write has been queued
+ *     SDCARD_OPERATION_BUSY        - The card is already busy and cannot accept your write
+ *     SDCARD_OPERATION_FAILURE     - A fatal error occured, card will be reset
+ */
+sdcardOperationStatus_e sdcard_beginWriteBlocks(uint32_t blockIndex, uint32_t blockCount);
+
+/**
+ * Abort a multiple-block write early (before all the `blockCount` blocks had been written).
+ *
+ * Returns:
+ *     SDCARD_OPERATION_SUCCESS     - Multi-block write has been cancelled, or no multi-block write was in progress.
+ *     SDCARD_OPERATION_BUSY        - The card is busy with another operation and could not cancel the multi-block write.
+ */
+sdcardOperationStatus_e sdcard_endWriteBlocks();

@@ -19,19 +19,25 @@ typedef enum {
     SDCARD_STATE_INITIALIZATION,
     SDCARD_STATE_READY,
     SDCARD_STATE_READING,
-    SDCARD_STATE_WRITING
+    SDCARD_STATE_WRITING,
+    SDCARD_STATE_WRITING_MULTIPLE_BLOCKS,
 } sdcardState_e;
 
 static struct {
-    sdcard_operationCompleteCallback_c callback;
-    uint32_t callbackData;
-    uint8_t *buffer;
-    uint32_t blockIndex;
-    int countdownTimer;
-} currentOperation;
+    struct {
+        sdcard_operationCompleteCallback_c callback;
+        uint32_t callbackData;
+        uint8_t *buffer;
+        uint32_t blockIndex;
+        int countdownTimer;
+    } currentOperation;
 
-static uint64_t sdcardCapacity;
-static sdcardState_e sdcardState = SDCARD_STATE_NOT_PRESENT;
+    uint64_t capacity;
+    sdcardState_e state;
+
+    uint32_t multiWriteNextBlock;
+    uint32_t multiWriteBlocksRemain;
+} sdcard;
 
 bool sdcard_sim_init(const char *filename)
 {
@@ -42,11 +48,11 @@ bool sdcard_sim_init(const char *filename)
     }
 
     fseek(simFile, 0, SEEK_END);
-    sdcardCapacity = ftello(simFile);
+    sdcard.capacity = ftello(simFile);
 
     fseek(simFile, 0, SEEK_SET);
 
-    sdcardState = SDCARD_STATE_READY;
+    sdcard.state = SDCARD_STATE_READY;
 
     return true;
 }
@@ -54,46 +60,84 @@ bool sdcard_sim_init(const char *filename)
 void sdcard_sim_destroy()
 {
     fclose(simFile);
-    sdcardState = SDCARD_STATE_NOT_PRESENT;
+    sdcard.state = SDCARD_STATE_NOT_PRESENT;
 }
 
 static void sdcard_continueReadBlock()
 {
-    if (--currentOperation.countdownTimer <= 0) {
-        uint64_t byteIndex = (uint64_t) currentOperation.blockIndex * SDCARD_SIM_BLOCK_SIZE;
+    if (--sdcard.currentOperation.countdownTimer <= 0) {
+        uint64_t byteIndex = (uint64_t) sdcard.currentOperation.blockIndex * SDCARD_SIM_BLOCK_SIZE;
 
         fseeko(simFile, byteIndex, SEEK_SET);
 
-        if (fread(currentOperation.buffer, sizeof(uint8_t), SDCARD_SIM_BLOCK_SIZE, simFile) == SDCARD_SIM_BLOCK_SIZE) {
-            if (currentOperation.callback) {
-                currentOperation.callback(SDCARD_BLOCK_OPERATION_READ, currentOperation.blockIndex, currentOperation.buffer, currentOperation.callbackData);
+        if (fread(sdcard.currentOperation.buffer, sizeof(uint8_t), SDCARD_SIM_BLOCK_SIZE, simFile) == SDCARD_SIM_BLOCK_SIZE) {
+            if (sdcard.currentOperation.callback) {
+                sdcard.currentOperation.callback(SDCARD_BLOCK_OPERATION_READ, sdcard.currentOperation.blockIndex, sdcard.currentOperation.buffer, sdcard.currentOperation.callbackData);
             }
         } else {
             fprintf(stderr, "SDCardSim: fread failed on underlying file\n");
             exit(-1);
         }
 
-        sdcardState = SDCARD_STATE_READY;
+        sdcard.state = SDCARD_STATE_READY;
     }
 }
 
 static void sdcard_continueWriteBlock()
 {
-    if (--currentOperation.countdownTimer <= 0) {
-        uint64_t byteIndex = (uint64_t) currentOperation.blockIndex * SDCARD_SIM_BLOCK_SIZE;
+    if (--sdcard.currentOperation.countdownTimer <= 0) {
+        uint64_t byteIndex = (uint64_t) sdcard.currentOperation.blockIndex * SDCARD_SIM_BLOCK_SIZE;
 
         fseeko(simFile, byteIndex, SEEK_SET);
 
-        if (fwrite(currentOperation.buffer, sizeof(uint8_t), SDCARD_SIM_BLOCK_SIZE, simFile) == SDCARD_SIM_BLOCK_SIZE) {
-            if (currentOperation.callback) {
-                currentOperation.callback(SDCARD_BLOCK_OPERATION_WRITE, currentOperation.blockIndex, currentOperation.buffer, currentOperation.callbackData);
+        if (fwrite(sdcard.currentOperation.buffer, sizeof(uint8_t), SDCARD_SIM_BLOCK_SIZE, simFile) == SDCARD_SIM_BLOCK_SIZE) {
+            if (sdcard.multiWriteBlocksRemain > 1) {
+                sdcard.multiWriteBlocksRemain--;
+                sdcard.multiWriteNextBlock++;
+                sdcard.state = SDCARD_STATE_WRITING_MULTIPLE_BLOCKS;
+            } else {
+                if (sdcard.multiWriteBlocksRemain == 1) {
+                    sdcard.multiWriteBlocksRemain = 0;
+#ifdef AFATFS_DEBUG_VERBOSE
+                    fprintf(stderr, "SD card - Finished multiple block write\n");
+#endif
+                }
+                sdcard.state = SDCARD_STATE_READY;
+            }
+
+            if (sdcard.currentOperation.callback) {
+                sdcard.currentOperation.callback(SDCARD_BLOCK_OPERATION_WRITE, sdcard.currentOperation.blockIndex, sdcard.currentOperation.buffer, sdcard.currentOperation.callbackData);
             }
         } else {
             fprintf(stderr, "SDCardSim: fwrite failed on underlying file\n");
             exit(-1);
         }
 
-        sdcardState = SDCARD_STATE_READY;
+    }
+}
+
+sdcardOperationStatus_e sdcard_endWriteBlocks()
+{
+    switch (sdcard.state) {
+        case SDCARD_STATE_WRITING_MULTIPLE_BLOCKS:
+#ifdef AFATFS_DEBUG_VERBOSE
+            if (sdcard.multiWriteBlocksRemain > 0) {
+                fprintf(stderr, "SD card - Terminated multiple block write with %u still remaining\n", sdcard.multiWriteBlocksRemain);
+            } else {
+                fprintf(stderr, "SD card - Finished multiple block write\n");
+            }
+#endif
+
+            sdcard.state = SDCARD_STATE_READY;
+            sdcard.multiWriteBlocksRemain = 0;
+
+            // Fall through
+
+       case SDCARD_STATE_READY:
+            return SDCARD_OPERATION_SUCCESS;
+
+       default:
+            return SDCARD_OPERATION_BUSY;
     }
 }
 
@@ -101,15 +145,20 @@ bool sdcard_readBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationComp
 {
     uint64_t byteIndex = (uint64_t) blockIndex * SDCARD_SIM_BLOCK_SIZE;
 
-    if (sdcardState != SDCARD_STATE_READY)
-        return false;
+    if (sdcard.state != SDCARD_STATE_READY) {
+        if (sdcard.state == SDCARD_STATE_WRITING_MULTIPLE_BLOCKS) {
+            sdcard_endWriteBlocks();
+        } else {
+            return false;
+        }
+    }
 
 #ifdef AFATFS_DEBUG_VERBOSE
-    fprintf(stderr, "SD card - Read %u\n", blockIndex);
+    fprintf(stderr, "SD card - Read block %u\n", blockIndex);
 #endif
 
-    if (byteIndex >= sdcardCapacity) {
-        fprintf(stderr, "SDCardSim: Attempted to read from %" PRIu64 " but capacity is %" PRIu64 "\n", byteIndex, sdcardCapacity);
+    if (byteIndex >= sdcard.capacity) {
+        fprintf(stderr, "SDCardSim: Attempted to read from %" PRIu64 " but capacity is %" PRIu64 "\n", byteIndex, sdcard.capacity);
         exit(-1);
     }
 
@@ -117,13 +166,13 @@ bool sdcard_readBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationComp
      * Just like the real SD card will, we will defer this read till later, so the operation won't be done yet when
      * this routine returns.
      */
-    sdcardState = SDCARD_STATE_READING;
+    sdcard.state = SDCARD_STATE_READING;
 
-    currentOperation.buffer = buffer;
-    currentOperation.blockIndex = blockIndex;
-    currentOperation.callback = callback;
-    currentOperation.callbackData = callbackData;
-    currentOperation.countdownTimer = SDCARD_SIM_READ_DELAY;
+    sdcard.currentOperation.buffer = buffer;
+    sdcard.currentOperation.blockIndex = blockIndex;
+    sdcard.currentOperation.callback = callback;
+    sdcard.currentOperation.callbackData = callbackData;
+    sdcard.currentOperation.countdownTimer = SDCARD_SIM_READ_DELAY;
 
     return true;
 }
@@ -132,15 +181,22 @@ sdcardOperationStatus_e sdcard_writeBlock(uint32_t blockIndex, uint8_t *buffer, 
 {
     uint64_t byteIndex = (uint64_t) blockIndex * SDCARD_SIM_BLOCK_SIZE;
 
-    if (sdcardState != SDCARD_STATE_READY)
-        return SDCARD_OPERATION_BUSY;
+    if (sdcard.state != SDCARD_STATE_READY) {
+        if (sdcard.state == SDCARD_STATE_WRITING_MULTIPLE_BLOCKS) {
+            if (blockIndex != sdcard.multiWriteNextBlock) {
+                sdcard_endWriteBlocks();
+            }
+        } else {
+            return SDCARD_OPERATION_BUSY;
+        }
+    }
 
 #ifdef AFATFS_DEBUG_VERBOSE
-    fprintf(stderr, "SD card - Write %u\n", blockIndex);
+    fprintf(stderr, "SD card - Write block %u\n", blockIndex);
 #endif
 
-    if (byteIndex >= sdcardCapacity) {
-        fprintf(stderr, "SDCardSim: Attempted to write to block at %" PRIu64 " but capacity is %" PRIu64 "\n", byteIndex, sdcardCapacity);
+    if (byteIndex >= sdcard.capacity) {
+        fprintf(stderr, "SDCardSim: Attempted to write to block at %" PRIu64 " but capacity is %" PRIu64 "\n", byteIndex, sdcard.capacity);
         exit(-1);
     }
 
@@ -148,25 +204,76 @@ sdcardOperationStatus_e sdcard_writeBlock(uint32_t blockIndex, uint8_t *buffer, 
      * Just like the real SD card will, we will defer this write till later, so the operation won't be done yet when
      * this routine returns.
      */
-    sdcardState = SDCARD_STATE_WRITING;
+    sdcard.state = SDCARD_STATE_WRITING;
 
-    currentOperation.countdownTimer = SDCARD_SIM_WRITE_DELAY;
-    currentOperation.buffer = buffer;
-    currentOperation.blockIndex = blockIndex;
-    currentOperation.callback = callback;
-    currentOperation.callbackData = callbackData;
+    sdcard.currentOperation.countdownTimer = SDCARD_SIM_WRITE_DELAY;
+    sdcard.currentOperation.buffer = buffer;
+    sdcard.currentOperation.blockIndex = blockIndex;
+    sdcard.currentOperation.callback = callback;
+    sdcard.currentOperation.callbackData = callbackData;
 
     return SDCARD_OPERATION_IN_PROGRESS;
 }
 
+sdcardOperationStatus_e sdcard_beginWriteBlocks(uint32_t blockIndex, uint32_t blockCount)
+{
+    uint64_t byteIndex = (uint64_t) blockIndex * SDCARD_SIM_BLOCK_SIZE;
+
+    if (sdcard.state != SDCARD_STATE_READY) {
+        if (sdcard.state == SDCARD_STATE_WRITING_MULTIPLE_BLOCKS) {
+            if (blockIndex != sdcard.multiWriteNextBlock) {
+                sdcard_endWriteBlocks();
+            } else {
+                // Assume that the caller wants to continue the multi-block write they already have in progress!
+                return SDCARD_OPERATION_SUCCESS;
+            }
+        } else {
+            return SDCARD_OPERATION_BUSY;
+        }
+    }
+
+    if (byteIndex + blockCount * SDCARD_SIM_BLOCK_SIZE > sdcard.capacity) {
+        fprintf(stderr, "SDCardSim: Attempted to write to multi-block write at %" PRIu64 " but capacity is %" PRIu64 "\n", byteIndex + blockCount * SDCARD_SIM_BLOCK_SIZE, sdcard.capacity);
+        exit(-1);
+    }
+
+#ifdef AFATFS_DEBUG_VERBOSE
+    fprintf(stderr, "SD card - Begin multi-block write of %u blocks beginning with block %u\n", blockCount, blockIndex);
+#endif
+
+    sdcard.state = SDCARD_STATE_WRITING_MULTIPLE_BLOCKS;
+    sdcard.multiWriteBlocksRemain = blockCount;
+    sdcard.multiWriteNextBlock = blockIndex;
+
+    /*
+     * The SD card doesn't guarantee the contents of sectors that we asked it to erase, but didn't end up overwriting
+     * during our multi-block write.
+     *
+     * So fill those with some non-zero garbage to make sure we're not depending on them being erased to sensible values.
+     */
+    uint8_t garbageBuffer[SDCARD_SIM_BLOCK_SIZE];
+
+    for (uint32_t i = 0 ; i < SDCARD_SIM_BLOCK_SIZE; i++) {
+        garbageBuffer[i] = i | 1;
+    }
+
+    fseeko(simFile, byteIndex, SEEK_SET);
+
+    for (uint32_t i = 0; i < blockCount; i++) {
+        fwrite((char*) garbageBuffer, sizeof(uint8_t), SDCARD_SIM_BLOCK_SIZE, simFile);
+    }
+
+    return SDCARD_OPERATION_SUCCESS;
+}
+
 bool sdcard_sim_isReady()
 {
-    return sdcardState == SDCARD_STATE_READY;
+    return sdcard.state == SDCARD_STATE_READY || sdcard.state == SDCARD_STATE_WRITING_MULTIPLE_BLOCKS;
 }
 
 bool sdcard_poll()
 {
-    switch (sdcardState) {
+    switch (sdcard.state) {
         case SDCARD_STATE_READING:
             sdcard_continueReadBlock();
         break;
@@ -177,5 +284,5 @@ bool sdcard_poll()
             ;
     }
 
-    return sdcardState == SDCARD_STATE_READY;
+    return sdcard_sim_isReady();
 }

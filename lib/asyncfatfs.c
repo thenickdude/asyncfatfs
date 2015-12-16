@@ -44,6 +44,12 @@
 #define AFATFS_DEFAULT_FILE_DATE FAT_MAKE_DATE(2015, 12, 01)
 #define AFATFS_DEFAULT_FILE_TIME FAT_MAKE_TIME(00, 00, 00)
 
+/*
+ * How many blocks will we write in a row before we bother using the SDcard's multiple block write method?
+ * If this define is omitted, this disables multi-block write.
+ */
+#define AFATFS_MIN_MULTIPLE_BLOCK_WRITE_COUNT 4
+
 #define AFATFS_FILES_PER_DIRECTORY_SECTOR (AFATFS_SECTOR_SIZE / sizeof(fatDirectoryEntry_t))
 
 #define AFATFS_FAT32_FAT_ENTRIES_PER_SECTOR  (AFATFS_SECTOR_SIZE / sizeof(uint32_t))
@@ -68,12 +74,10 @@
 #define AFATFS_CACHE_WRITE        2
 // Lock this sector to prevent its state from transitioning (prevent flushes to disk)
 #define AFATFS_CACHE_LOCK         4
-// Opposite of Lock
-#define AFATFS_CACHE_UNLOCK       8
 // Discard this sector in preference to other sectors when it is in the in-sync state
-#define AFATFS_CACHE_DISCARDABLE  16
+#define AFATFS_CACHE_DISCARDABLE  8
 // Increase the retain counter of the cache sector to prevent it from being discarded when in the in-sync state
-#define AFATFS_CACHE_RETAIN       32
+#define AFATFS_CACHE_RETAIN       16
 
 // Turn the largest free block on the disk into one contiguous file for efficient fragment-free allocation
 #define AFATFS_USE_FREEFILE
@@ -129,7 +133,7 @@ typedef enum {
     AFATFS_FIND_CLUSTER_NOT_FOUND,
 } afatfsFindClusterStatus_e;
 
-struct afatfsOperation_t;
+struct afatfsFileOperation_t;
 
 typedef union afatfsFATSector_t {
     uint8_t *bytes;
@@ -150,6 +154,14 @@ typedef struct afatfsCacheBlockDescriptor_t {
 
     // This is the last time the sector was accessed
     uint32_t accessTimestamp;
+
+    /* This is set to non-zero when we expect to write a consecutive series of this many blocks (including this block),
+     * so we will tell the SD-card to pre-erase those blocks.
+     *
+     * This counter only needs to be set on the first block of a consecutive write (though setting it, appropriately
+     * decreased, on the subsequent blocks won't hurt).
+     */
+    uint16_t consecutiveEraseBlockCount;
 
     afatfsCacheBlockState_e state;
 
@@ -310,7 +322,7 @@ typedef enum {
     AFATFS_FILE_OPERATION_EXTEND_SUBDIRECTORY,
 } afatfsFileOperation_e;
 
-typedef struct afatfsOperation_t {
+typedef struct afatfsFileOperation_t {
     afatfsFileOperation_e operation;
     union {
         afatfsCreateFile_t createFile;
@@ -366,7 +378,7 @@ typedef struct afatfsFile_t {
     uint32_t cursorPreviousCluster;
 
     uint8_t mode; // A combination of AFATFS_FILE_MODE_* flags
-    uint8_t attrib; // FAT directory entry attributes for this file
+    uint8_t attrib; // Combination of FAT_FILE_ATTRIBUTE_* flags for the directory entry of this file
 
     /* We hold on to one sector entry in the cache and remember its index here. The cache is invalidated when we
      * seek across a sector boundary. This allows fwrite() to complete faster because it doesn't need to check the
@@ -383,7 +395,7 @@ typedef struct afatfsFile_t {
     uint32_t firstCluster;
 
     // State for a queued operation on the file
-    struct afatfsOperation_t operation;
+    struct afatfsFileOperation_t operation;
 } afatfsFile_t;
 
 typedef enum {
@@ -578,6 +590,8 @@ static void afatfs_cacheSectorInit(afatfsCacheBlockDescriptor_t *descriptor, uin
 
     descriptor->accessTimestamp = descriptor->writeTimestamp = ++afatfs.cacheTimer;
 
+    descriptor->consecutiveEraseBlockCount = 0;
+
     descriptor->state = AFATFS_CACHE_STATE_EMPTY;
 
     descriptor->locked = locked;
@@ -647,18 +661,26 @@ static void afatfs_sdcardWriteComplete(sdcardBlockOperation_e operation, uint32_
  */
 static void afatfs_cacheFlushSector(int cacheIndex)
 {
-    switch (sdcard_writeBlock(afatfs.cacheDescriptor[cacheIndex].sectorIndex, afatfs_cacheSectorGetMemory(cacheIndex), afatfs_sdcardWriteComplete, 0)) {
+    afatfsCacheBlockDescriptor_t *cacheDescriptor = &afatfs.cacheDescriptor[cacheIndex];
+
+#ifdef AFATFS_MIN_MULTIPLE_BLOCK_WRITE_COUNT
+    if (cacheDescriptor->consecutiveEraseBlockCount) {
+        sdcard_beginWriteBlocks(cacheDescriptor->sectorIndex, cacheDescriptor->consecutiveEraseBlockCount);
+    }
+#endif
+
+    switch (sdcard_writeBlock(cacheDescriptor->sectorIndex, afatfs_cacheSectorGetMemory(cacheIndex), afatfs_sdcardWriteComplete, 0)) {
         case SDCARD_OPERATION_IN_PROGRESS:
             // The card will call us back later when the buffer transmission finishes
             afatfs.cacheDirtyEntries--;
-            afatfs.cacheDescriptor[cacheIndex].state = AFATFS_CACHE_STATE_WRITING;
+            cacheDescriptor->state = AFATFS_CACHE_STATE_WRITING;
             afatfs.cacheFlushInProgress = true;
             break;
 
         case SDCARD_OPERATION_SUCCESS:
             // Buffer is already transmitted
             afatfs.cacheDirtyEntries--;
-            afatfs.cacheDescriptor[cacheIndex].state = AFATFS_CACHE_STATE_IN_SYNC;
+            cacheDescriptor->state = AFATFS_CACHE_STATE_IN_SYNC;
             break;
 
         case SDCARD_OPERATION_BUSY:
@@ -844,9 +866,18 @@ static void afatfs_fileGetCursorClusterAndSector(afatfsFilePtr_t file, uint32_t 
 /**
  * Get a cache entry for the given sector and store a pointer to the cached memory in *buffer.
  *
- * Sectorflags is a union of AFATFS_CACHE_* constants and says which operations the sector will be cached for.
+ * physicalSectorIndex - The index of the sector in the SD card to cache
+ * sectorflags         - A union of AFATFS_CACHE_* constants that says which operations the sector will be cached for.
+ * buffer              - A pointer to the 512-byte memory buffer for the sector will be stored here upon success
+ * eraseCount          - For write operations, set to a non-zero number to hint that we plan to write that many sectors
+ *                       consecutively (including this sector)
+ *
+ * Returns:
+ *     AFATFS_OPERATION_SUCCESS     - On success
+ *     AFATFS_OPERATION_IN_PROGRESS - Card is busy, call again later
+ *     AFATFS_OPERATION_FAILURE     - When the filesystem encounters a fatal error
  */
- static afatfsOperationStatus_e afatfs_cacheSector(uint32_t physicalSectorIndex, uint8_t **buffer, uint8_t sectorFlags)
+static afatfsOperationStatus_e afatfs_cacheSector(uint32_t physicalSectorIndex, uint8_t **buffer, uint8_t sectorFlags, uint32_t eraseCount)
 {
     // We never write to the MBR, so any attempt to write there is an asyncfatfs bug
     if (!afatfs_assert((sectorFlags & AFATFS_CACHE_WRITE) == 0 || physicalSectorIndex != 0)) {
@@ -873,8 +904,19 @@ static void afatfs_fileGetCursorClusterAndSector(afatfsFilePtr_t file, uint32_t 
                 return AFATFS_OPERATION_IN_PROGRESS;
             }
 
-            // We only get to decide if it is discardable if we're the ones who fill it
+            // We only get to decide these fields if we're the first ones to cache the sector:
             afatfs.cacheDescriptor[cacheSectorIndex].discardable = (sectorFlags & AFATFS_CACHE_DISCARDABLE) != 0 ? 1 : 0;
+
+#ifdef AFATFS_MIN_MULTIPLE_BLOCK_WRITE_COUNT
+            // Don't bother pre-erasing for small block sequences
+            if (eraseCount < AFATFS_MIN_MULTIPLE_BLOCK_WRITE_COUNT) {
+                eraseCount = 0;
+            } else {
+                eraseCount = MIN(eraseCount, UINT16_MAX); // If caller asked for a longer chain of sectors we silently truncate that here
+            }
+
+            afatfs.cacheDescriptor[cacheSectorIndex].consecutiveEraseBlockCount = eraseCount;
+#endif
 
             // Fall through
 
@@ -888,9 +930,6 @@ static void afatfs_fileGetCursorClusterAndSector(afatfsFilePtr_t file, uint32_t 
         case AFATFS_CACHE_STATE_DIRTY:
             if ((sectorFlags & AFATFS_CACHE_LOCK) != 0) {
                 afatfs.cacheDescriptor[cacheSectorIndex].locked = 1;
-            }
-            if ((sectorFlags & AFATFS_CACHE_UNLOCK) != 0) {
-                afatfs.cacheDescriptor[cacheSectorIndex].locked = 0;
             }
             if ((sectorFlags & AFATFS_CACHE_RETAIN) != 0) {
                 afatfs.cacheDescriptor[cacheSectorIndex].retainCount++;
@@ -1038,7 +1077,7 @@ static afatfsOperationStatus_e afatfs_FATGetNextCluster(int fatIndex, uint32_t c
 
     afatfs_getFATPositionForCluster(cluster, &fatSectorIndex, &fatSectorEntryIndex);
 
-    afatfsOperationStatus_e result = afatfs_cacheSector(afatfs_fatSectorToPhysical(fatIndex, fatSectorIndex), &sector.bytes, AFATFS_CACHE_READ);
+    afatfsOperationStatus_e result = afatfs_cacheSector(afatfs_fatSectorToPhysical(fatIndex, fatSectorIndex), &sector.bytes, AFATFS_CACHE_READ, 0);
 
     if (result == AFATFS_OPERATION_SUCCESS) {
         if (afatfs.filesystemType == FAT_FILESYSTEM_TYPE_FAT16) {
@@ -1069,7 +1108,7 @@ static afatfsOperationStatus_e afatfs_FATSetNextCluster(uint32_t startCluster, u
 
     fatPhysicalSector = afatfs_fatSectorToPhysical(0, fatSectorIndex);
 
-    result = afatfs_cacheSector(fatPhysicalSector, &sector.bytes, AFATFS_CACHE_READ | AFATFS_CACHE_WRITE);
+    result = afatfs_cacheSector(fatPhysicalSector, &sector.bytes, AFATFS_CACHE_READ | AFATFS_CACHE_WRITE, 0);
 
     if (result == AFATFS_OPERATION_SUCCESS) {
         if (afatfs.filesystemType == FAT_FILESYSTEM_TYPE_FAT16) {
@@ -1166,7 +1205,7 @@ static afatfsFindClusterStatus_e afatfs_findClusterWithCondition(afatfsClusterSe
         }
 #endif
 
-        afatfsOperationStatus_e status = afatfs_cacheSector(afatfs_fatSectorToPhysical(0, fatSectorIndex), &sector.bytes, AFATFS_CACHE_READ | AFATFS_CACHE_DISCARDABLE);
+        afatfsOperationStatus_e status = afatfs_cacheSector(afatfs_fatSectorToPhysical(0, fatSectorIndex), &sector.bytes, AFATFS_CACHE_READ | AFATFS_CACHE_DISCARDABLE, 0);
 
         switch (status) {
             case AFATFS_OPERATION_SUCCESS:
@@ -1272,14 +1311,18 @@ static afatfsOperationStatus_e afatfs_FATFillWithPattern(afatfsFATPattern_e patt
     uint8_t fatEntrySize;
     uint32_t nextCluster;
     afatfsOperationStatus_e result;
+    uint32_t eraseSectorCount;
 
     // Find the position of the initial cluster to begin our fill
     afatfs_getFATPositionForCluster(*startCluster, &fatSectorIndex, &firstEntryIndex);
 
     fatPhysicalSector = afatfs_fatSectorToPhysical(0, fatSectorIndex);
 
+    // How many consecutive FAT sectors will we be overwriting?
+    eraseSectorCount = (endCluster - *startCluster + firstEntryIndex + afatfs_fatEntriesPerSector() - 1) / afatfs_fatEntriesPerSector();
+
     while (*startCluster < endCluster) {
-        // One past the last entry we will fill inside this sector:
+        // The last entry we will fill inside this sector (exclusive):
         uint32_t lastEntryIndex = MIN(firstEntryIndex + (endCluster - *startCluster), afatfs_fatEntriesPerSector());
 
         uint8_t cacheFlags = AFATFS_CACHE_WRITE | AFATFS_CACHE_DISCARDABLE;
@@ -1289,7 +1332,7 @@ static afatfsOperationStatus_e afatfs_FATFillWithPattern(afatfsFATPattern_e patt
             cacheFlags |= AFATFS_CACHE_READ;
         }
 
-        result = afatfs_cacheSector(fatPhysicalSector, &sector.bytes, cacheFlags);
+        result = afatfs_cacheSector(fatPhysicalSector, &sector.bytes, cacheFlags, eraseSectorCount);
 
         if (result != AFATFS_OPERATION_SUCCESS) {
             return result;
@@ -1321,7 +1364,7 @@ static afatfsOperationStatus_e afatfs_FATFillWithPattern(afatfsFATPattern_e patt
                 *startCluster += lastEntryIndex - firstEntryIndex;
 
                 if (pattern == AFATFS_FAT_PATTERN_TERMINATED_CHAIN && *startCluster == endCluster) {
-                // We completed the chain! Overwrite the last entry we wrote with the terminator for the end of the chain
+                    // We completed the chain! Overwrite the last entry we wrote with the terminator for the end of the chain
                     if (afatfs.filesystemType == FAT_FILESYSTEM_TYPE_FAT16) {
                         sector.fat16[lastEntryIndex - 1] = 0xFFFF;
                     } else {
@@ -1340,6 +1383,7 @@ static afatfsOperationStatus_e afatfs_FATFillWithPattern(afatfsFATPattern_e patt
         }
 
         fatPhysicalSector++;
+        eraseSectorCount--;
         firstEntryIndex = 0;
     }
 
@@ -1370,10 +1414,10 @@ static afatfsOperationStatus_e afatfs_saveDirectoryEntry(afatfsFilePtr_t file, a
         return AFATFS_OPERATION_SUCCESS; // Root directories don't have a directory entry
     }
 
-    result = afatfs_cacheSector(file->directoryEntryPos.sectorNumberPhysical, &sector, AFATFS_CACHE_READ | AFATFS_CACHE_WRITE);
+    result = afatfs_cacheSector(file->directoryEntryPos.sectorNumberPhysical, &sector, AFATFS_CACHE_READ | AFATFS_CACHE_WRITE, 0);
 
 #ifdef AFATFS_DEBUG_VERBOSE
-    fprintf(stderr, "Saving directory entry for %.*s to sector %u...\n", FAT_FILENAME_LENGTH, file->directoryEntry.filename, file->directoryEntryPos.sectorNumberPhysical);
+    fprintf(stderr, "Saving directory entry to sector %u...\n", file->directoryEntryPos.sectorNumberPhysical);
 #endif
 
     if (result == AFATFS_OPERATION_SUCCESS) {
@@ -1744,7 +1788,8 @@ static uint8_t* afatfs_fileRetainCursorSectorForRead(afatfsFilePtr_t file)
         afatfsOperationStatus_e status = afatfs_cacheSector(
             physicalSector,
             &result,
-            AFATFS_CACHE_READ | AFATFS_CACHE_RETAIN
+            AFATFS_CACHE_READ | AFATFS_CACHE_RETAIN,
+            0
         );
 
         if (status != AFATFS_OPERATION_SUCCESS) {
@@ -1767,6 +1812,7 @@ static uint8_t* afatfs_fileLockCursorSectorForWrite(afatfsFilePtr_t file)
 {
     afatfsOperationStatus_e status;
     uint8_t *result;
+    uint32_t eraseBlockCount;
 
     // Do we already have a sector locked in our cache at the cursor position?
     if (file->writeLockedCacheIndex != -1) {
@@ -1789,6 +1835,8 @@ static uint8_t* afatfs_fileLockCursorSectorForWrite(afatfsFilePtr_t file)
         uint32_t physicalSector = afatfs_fileGetCursorPhysicalSector(file);
         uint8_t cacheFlags = AFATFS_CACHE_WRITE | AFATFS_CACHE_LOCK;
         uint32_t cursorOffsetInSector = file->cursorOffset % AFATFS_SECTOR_SIZE;
+        uint32_t offsetOfStartOfSector = file->cursorOffset & ~((uint32_t) AFATFS_SECTOR_SIZE - 1);
+        uint32_t offsetOfEndOfSector = offsetOfStartOfSector + AFATFS_SECTOR_SIZE;
 
         /*
          * If there is data before the write point in this sector, or there could be data after the write-point
@@ -1796,15 +1844,25 @@ static uint8_t* afatfs_fileLockCursorSectorForWrite(afatfsFilePtr_t file)
          */
         if (
             cursorOffsetInSector > 0
-            || (file->cursorOffset & ~(AFATFS_SECTOR_SIZE - 1)) /* Offset of the start of current sector */ + AFATFS_SECTOR_SIZE < file->logicalSize
+            || offsetOfEndOfSector < file->logicalSize
         ) {
             cacheFlags |= AFATFS_CACHE_READ;
+        }
+
+        // In contiguous append mode, we'll pre-erase the whole supercluster
+        if ((file->mode & (AFATFS_FILE_MODE_APPEND | AFATFS_FILE_MODE_CONTIGUOUS)) == (AFATFS_FILE_MODE_APPEND | AFATFS_FILE_MODE_CONTIGUOUS)) {
+            uint32_t cursorOffsetInSupercluster = file->cursorOffset & (afatfs_superClusterSize() - 1);
+
+            eraseBlockCount = afatfs_fatEntriesPerSector() * afatfs.sectorsPerCluster - cursorOffsetInSupercluster / AFATFS_SECTOR_SIZE;
+        } else {
+            eraseBlockCount = 0;
         }
 
         status = afatfs_cacheSector(
             physicalSector,
             &result,
-            cacheFlags
+            cacheFlags,
+            eraseBlockCount
         );
 
         if (status != AFATFS_OPERATION_SUCCESS) {
@@ -2131,7 +2189,7 @@ static afatfsOperationStatus_e afatfs_extendSubdirectoryContinue(afatfsFile_t *d
             physicalSector = afatfs_fileGetCursorPhysicalSector(directory);
 
             while (1) {
-                status = afatfs_cacheSector(physicalSector, &sectorBuffer, AFATFS_CACHE_WRITE);
+                status = afatfs_cacheSector(physicalSector, &sectorBuffer, AFATFS_CACHE_WRITE, 0);
 
                 if (status != AFATFS_OPERATION_SUCCESS) {
                     return status;
@@ -2544,7 +2602,8 @@ static void afatfs_createFileContinue(afatfsFile_t *file)
                 status = afatfs_cacheSector(
                     file->directoryEntryPos.sectorNumberPhysical,
                     &directorySector,
-                    AFATFS_CACHE_READ | AFATFS_CACHE_RETAIN
+                    AFATFS_CACHE_READ | AFATFS_CACHE_RETAIN,
+                    0
                 );
 
                 if (status != AFATFS_OPERATION_SUCCESS) {
@@ -3270,7 +3329,7 @@ static void afatfs_initContinue()
 
     switch (afatfs.initPhase) {
         case AFATFS_INITIALIZATION_READ_MBR:
-            if (afatfs_cacheSector(0, &sector, AFATFS_CACHE_READ | AFATFS_CACHE_DISCARDABLE) == AFATFS_OPERATION_SUCCESS) {
+            if (afatfs_cacheSector(0, &sector, AFATFS_CACHE_READ | AFATFS_CACHE_DISCARDABLE, 0) == AFATFS_OPERATION_SUCCESS) {
                 if (afatfs_parseMBR(sector)) {
                     afatfs.initPhase = AFATFS_INITIALIZATION_READ_VOLUME_ID;
                     goto doMore;
@@ -3281,7 +3340,7 @@ static void afatfs_initContinue()
             }
         break;
         case AFATFS_INITIALIZATION_READ_VOLUME_ID:
-            if (afatfs_cacheSector(afatfs.partitionStartSector, &sector, AFATFS_CACHE_READ | AFATFS_CACHE_DISCARDABLE) == AFATFS_OPERATION_SUCCESS) {
+            if (afatfs_cacheSector(afatfs.partitionStartSector, &sector, AFATFS_CACHE_READ | AFATFS_CACHE_DISCARDABLE, 0) == AFATFS_OPERATION_SUCCESS) {
                 if (afatfs_parseVolumeID(sector)) {
                     // Open the root directory
                     afatfs_chdir(NULL);
