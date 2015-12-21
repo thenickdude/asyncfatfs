@@ -1,5 +1,6 @@
 DEBUG_FLAGS	 = -g3 -ggdb -DAFATFS_DEBUG
 
+# We use -m32 so our structures are a similar size to what they will be on 32-bit ARM
 CFLAGS = -O0 \
 	-m32 \
 	$(DEBUG_FLAGS) \
@@ -13,7 +14,7 @@ SDCARD_TEMP_FILE = tests/sdcard_temp.dmg
 
 .PHONY: all test test-long clean test-binaries
 
-all: test-binaries
+all: test-binaries tools/profile_decode
 
 test-binaries: tests/test_root_fill tests/test_subdir_fill tests/test_volume_fill tests/test_file_modes tests/test_file_delete tests/test_logging_workload tests/test_file_size tests/test_file_size_powerloss
 
@@ -105,5 +106,7 @@ tests/test_logging_workload : $(AFATFS_SOURCE) $(TEST_SOURCE) tests/test_logging
 tests/test_file_size : $(AFATFS_SOURCE) $(TEST_SOURCE) tests/test_file_size.c
 tests/test_file_size_powerloss : $(AFATFS_SOURCE) $(TEST_SOURCE) tests/test_file_size_powerloss.c
 
+tools/profile_decode: tools/profile_decode.c
+
 clean :
-	rm -f tests/test_root_fill tests/test_subdir_fill tests/test_volume_fill tests/test_file_modes tests/test_file_delete tests/test_logging_workload tests/test_file_size tests/test_file_size_powerloss
+	rm -f tests/test_root_fill tests/test_subdir_fill tests/test_volume_fill tests/test_file_modes tests/test_file_delete tests/test_logging_workload tests/test_file_size tests/test_file_size_powerloss tools/profile_decode

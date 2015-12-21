@@ -34,6 +34,8 @@ typedef enum {
 
 typedef void(*sdcard_operationCompleteCallback_c)(sdcardBlockOperation_e operation, uint32_t blockIndex, uint8_t *buffer, uint32_t callbackData);
 
+typedef void(*sdcard_profilerCallback_c)(sdcardBlockOperation_e operation, uint32_t blockIndex, uint32_t duration);
+
 /**
  * Read the 512-byte block with the given index into the given 512-byte buffer.
  *
@@ -95,3 +97,5 @@ sdcardOperationStatus_e sdcard_beginWriteBlocks(uint32_t blockIndex, uint32_t bl
  *     SDCARD_OPERATION_BUSY        - The card is busy with another operation and could not cancel the multi-block write.
  */
 sdcardOperationStatus_e sdcard_endWriteBlocks();
+
+void sdcard_setProfilerCallback(sdcard_profilerCallback_c callback);

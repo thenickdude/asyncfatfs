@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <inttypes.h>
+#include <time.h>
 
 #include "sdcard_sim.h"
 
@@ -29,8 +30,11 @@ static struct {
         uint32_t callbackData;
         uint8_t *buffer;
         uint32_t blockIndex;
+        uint32_t startTime;
         int countdownTimer;
     } currentOperation;
+
+    sdcard_profilerCallback_c profiler;
 
     uint64_t capacity;
     sdcardState_e state;
@@ -38,6 +42,14 @@ static struct {
     uint32_t multiWriteNextBlock;
     uint32_t multiWriteBlocksRemain;
 } sdcard;
+
+/**
+ * Get the current time in microseconds
+ */
+static uint32_t getCurrentTime()
+{
+    return ((uint64_t) clock() * 1000000) / CLOCKS_PER_SEC;
+}
 
 bool sdcard_sim_init(const char *filename)
 {
@@ -74,6 +86,9 @@ static void sdcard_continueReadBlock()
             if (sdcard.currentOperation.callback) {
                 sdcard.currentOperation.callback(SDCARD_BLOCK_OPERATION_READ, sdcard.currentOperation.blockIndex, sdcard.currentOperation.buffer, sdcard.currentOperation.callbackData);
             }
+            if (sdcard.profiler) {
+                sdcard.profiler(SDCARD_BLOCK_OPERATION_READ, sdcard.currentOperation.blockIndex, getCurrentTime() - sdcard.currentOperation.startTime);
+            }
         } else {
             fprintf(stderr, "SDCardSim: fread failed on underlying file\n");
             exit(-1);
@@ -107,6 +122,9 @@ static void sdcard_continueWriteBlock()
 
             if (sdcard.currentOperation.callback) {
                 sdcard.currentOperation.callback(SDCARD_BLOCK_OPERATION_WRITE, sdcard.currentOperation.blockIndex, sdcard.currentOperation.buffer, sdcard.currentOperation.callbackData);
+            }
+            if (sdcard.profiler) {
+                sdcard.profiler(SDCARD_BLOCK_OPERATION_WRITE, sdcard.currentOperation.blockIndex, getCurrentTime() - sdcard.currentOperation.startTime);
             }
         } else {
             fprintf(stderr, "SDCardSim: fwrite failed on underlying file\n");
@@ -173,6 +191,7 @@ bool sdcard_readBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationComp
     sdcard.currentOperation.callback = callback;
     sdcard.currentOperation.callbackData = callbackData;
     sdcard.currentOperation.countdownTimer = SDCARD_SIM_READ_DELAY;
+    sdcard.currentOperation.startTime = getCurrentTime();
 
     return true;
 }
@@ -206,11 +225,12 @@ sdcardOperationStatus_e sdcard_writeBlock(uint32_t blockIndex, uint8_t *buffer, 
      */
     sdcard.state = SDCARD_STATE_WRITING;
 
-    sdcard.currentOperation.countdownTimer = SDCARD_SIM_WRITE_DELAY;
     sdcard.currentOperation.buffer = buffer;
     sdcard.currentOperation.blockIndex = blockIndex;
     sdcard.currentOperation.callback = callback;
     sdcard.currentOperation.callbackData = callbackData;
+    sdcard.currentOperation.countdownTimer = SDCARD_SIM_WRITE_DELAY;
+    sdcard.currentOperation.startTime = getCurrentTime();
 
     return SDCARD_OPERATION_IN_PROGRESS;
 }
@@ -285,4 +305,9 @@ bool sdcard_poll()
     }
 
     return sdcard_sim_isReady();
+}
+
+void sdcard_setProfilerCallback(sdcard_profilerCallback_c callback)
+{
+    sdcard.profiler = callback;
 }
