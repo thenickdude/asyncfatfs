@@ -38,6 +38,9 @@ typedef enum {
 } testStage_e;
 
 typedef enum {
+	SPACE_RECLAIM_TEST_STAGE_EMPTY_INIT,
+    SPACE_RECLAIM_TEST_STAGE_EMPTY_OPEN,
+    SPACE_RECLAIM_TEST_STAGE_EMPTY_DELETE,
     SPACE_RECLAIM_TEST_STAGE_SOLID_APPEND_INIT,
     SPACE_RECLAIM_TEST_STAGE_SOLID_APPEND_OPEN,
     SPACE_RECLAIM_TEST_STAGE_SOLID_APPEND,
@@ -81,6 +84,30 @@ static afatfsFilePtr_t testFile;
 static afatfsFilePtr_t retainTestFileA, retainTestFileB, retainTestFileC;
 
 static uint32_t logEntryIndex, logFileIndex;
+
+void spaceReclaimTestFileCreatedForEmpty(afatfsFilePtr_t file)
+{
+    uint32_t position;
+
+    testAssert(file, "Creating testfile failed");
+    testAssert(afatfs_ftell(file, &position), "ftell should work after file opens");
+    testAssert(position == 0, "File opened for solid append didn't start at offset 0");
+
+    testFile = file;
+    reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_EMPTY_DELETE;
+}
+
+void spaceReclaimTestFileEmptyDeleted()
+{
+    testFile = NULL;
+    logFileIndex++;
+
+    if (logFileIndex < RECLAIM_LOG_FILE_COUNT) {
+        reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_EMPTY_OPEN;
+    } else {
+        reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_SOLID_APPEND_INIT;
+    }
+}
 
 void spaceReclaimTestFileCreatedForSolidAppend(afatfsFilePtr_t file)
 {
@@ -141,10 +168,25 @@ void spaceReclaimTestFileAppendDeleted()
 bool continueSpaceReclaimTest(bool start)
 {
     if (start) {
-        reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_SOLID_APPEND_INIT;
+        reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_EMPTY_INIT;
     }
 
     switch (reclaimTestStage) {
+		case SPACE_RECLAIM_TEST_STAGE_EMPTY_INIT:
+			reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_EMPTY_OPEN;
+            logFileIndex = 0;
+		break;
+		case SPACE_RECLAIM_TEST_STAGE_EMPTY_OPEN:
+			reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_IDLE;
+            logEntryIndex = 0;
+            afatfs_fopen("test.txt", "w+", spaceReclaimTestFileCreatedForEmpty);
+		break;
+		case SPACE_RECLAIM_TEST_STAGE_EMPTY_DELETE:
+			if (afatfs_funlink(testFile, spaceReclaimTestFileEmptyDeleted)) {
+                // Wait for the unlink to complete
+                reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_IDLE;
+            }
+		break;
         case SPACE_RECLAIM_TEST_STAGE_SOLID_APPEND_INIT:
             reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_SOLID_APPEND_OPEN;
             logFileIndex = 0;
@@ -193,7 +235,7 @@ bool continueSpaceReclaimTest(bool start)
             // Waiting for file operations...
         break;
         case SPACE_RECLAIM_TEST_STAGE_COMPLETE:
-            fprintf(stderr, "[Success]  Free space is reclaimed when files are deleted (solid and standard append)\n");
+            fprintf(stderr, "[Success]  Free space is reclaimed when files are deleted (empty, solid and standard append)\n");
             return false;
     }
 

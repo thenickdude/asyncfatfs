@@ -1120,9 +1120,9 @@ static afatfsOperationStatus_e afatfs_FATSetNextCluster(uint32_t startCluster, u
     uint32_t fatSectorIndex, fatSectorEntryIndex, fatPhysicalSector;
     afatfsOperationStatus_e result;
 
-#ifdef AFATFS_DEBUG
-    afatfs_assert(startCluster >= FAT_SMALLEST_LEGAL_CLUSTER_NUMBER);
-#endif
+	if(!afatfs_assert(startCluster >= FAT_SMALLEST_LEGAL_CLUSTER_NUMBER)){
+		return AFATFS_OPERATION_FAILURE; // startCluster is not valid;
+	}
 
     afatfs_getFATPositionForCluster(startCluster, &fatSectorIndex, &fatSectorEntryIndex);
 
@@ -2398,6 +2398,10 @@ static afatfsOperationStatus_e afatfs_ftruncateContinue(afatfsFilePtr_t file, bo
             status = afatfs_saveDirectoryEntry(file, markDeleted ? AFATFS_SAVE_DIRECTORY_DELETED : AFATFS_SAVE_DIRECTORY_NORMAL);
 
             if (status == AFATFS_OPERATION_SUCCESS) {
+				if(opState->currentCluster == 0x0){ //current cluster 0 at this phase means it is an empty file 
+					opState->phase = AFATFS_TRUNCATE_FILE_SUCCESS; 
+					goto doMore;
+				}
 #ifdef AFATFS_USE_FREEFILE
                 if (opState->endCluster) {
                     opState->phase = AFATFS_TRUNCATE_FILE_ERASE_FAT_CHAIN_CONTIGUOUS;
