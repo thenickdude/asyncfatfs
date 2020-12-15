@@ -2398,6 +2398,10 @@ static afatfsOperationStatus_e afatfs_ftruncateContinue(afatfsFilePtr_t file, bo
             status = afatfs_saveDirectoryEntry(file, markDeleted ? AFATFS_SAVE_DIRECTORY_DELETED : AFATFS_SAVE_DIRECTORY_NORMAL);
 
             if (status == AFATFS_OPERATION_SUCCESS) {
+				if(opState->currentCluster == 0x0){ //current cluster 0 at this phase means it is an empty file 
+					opState->phase = AFATFS_TRUNCATE_FILE_SUCCESS; 
+					goto doMore;
+				}
 #ifdef AFATFS_USE_FREEFILE
                 if (opState->endCluster) {
                     opState->phase = AFATFS_TRUNCATE_FILE_ERASE_FAT_CHAIN_CONTIGUOUS;
