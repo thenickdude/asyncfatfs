@@ -38,7 +38,7 @@ typedef enum {
 } testStage_e;
 
 typedef enum {
-	SPACE_RECLAIM_TEST_STAGE_EMPTY_INIT,
+    SPACE_RECLAIM_TEST_STAGE_EMPTY_INIT,
     SPACE_RECLAIM_TEST_STAGE_EMPTY_OPEN,
     SPACE_RECLAIM_TEST_STAGE_EMPTY_DELETE,
     SPACE_RECLAIM_TEST_STAGE_SOLID_APPEND_INIT,
@@ -172,21 +172,21 @@ bool continueSpaceReclaimTest(bool start)
     }
 
     switch (reclaimTestStage) {
-		case SPACE_RECLAIM_TEST_STAGE_EMPTY_INIT:
-			reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_EMPTY_OPEN;
+        case SPACE_RECLAIM_TEST_STAGE_EMPTY_INIT:
+            reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_EMPTY_OPEN;
             logFileIndex = 0;
-		break;
-		case SPACE_RECLAIM_TEST_STAGE_EMPTY_OPEN:
-			reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_IDLE;
+        break;
+        case SPACE_RECLAIM_TEST_STAGE_EMPTY_OPEN:
+            reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_IDLE;
             logEntryIndex = 0;
             afatfs_fopen("test.txt", "w+", spaceReclaimTestFileCreatedForEmpty);
-		break;
-		case SPACE_RECLAIM_TEST_STAGE_EMPTY_DELETE:
-			if (afatfs_funlink(testFile, spaceReclaimTestFileEmptyDeleted)) {
+        break;
+        case SPACE_RECLAIM_TEST_STAGE_EMPTY_DELETE:
+            if (afatfs_funlink(testFile, spaceReclaimTestFileEmptyDeleted)) {
                 // Wait for the unlink to complete
                 reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_IDLE;
             }
-		break;
+        break;
         case SPACE_RECLAIM_TEST_STAGE_SOLID_APPEND_INIT:
             reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_SOLID_APPEND_OPEN;
             logFileIndex = 0;
