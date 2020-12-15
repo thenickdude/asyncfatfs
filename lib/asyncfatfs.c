@@ -1120,9 +1120,9 @@ static afatfsOperationStatus_e afatfs_FATSetNextCluster(uint32_t startCluster, u
     uint32_t fatSectorIndex, fatSectorEntryIndex, fatPhysicalSector;
     afatfsOperationStatus_e result;
 
-#ifdef AFATFS_DEBUG
-    afatfs_assert(startCluster >= FAT_SMALLEST_LEGAL_CLUSTER_NUMBER);
-#endif
+	if(!afatfs_assert(startCluster >= FAT_SMALLEST_LEGAL_CLUSTER_NUMBER)){
+		return AFATFS_OPERATION_FAILURE; // startCluster is not valid;
+	}
 
     afatfs_getFATPositionForCluster(startCluster, &fatSectorIndex, &fatSectorEntryIndex);
 
