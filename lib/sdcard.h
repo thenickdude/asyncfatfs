@@ -67,9 +67,9 @@ bool sdcard_readBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationComp
 sdcardOperationStatus_e sdcard_writeBlock(uint32_t blockIndex, uint8_t *buffer, sdcard_operationCompleteCallback_c callback, uint32_t callbackData);
 
 /**
- * Call periodically for the SD card to perform in-progress transfers.
+ * Will be called by afatfs_poll() periodically for the SD card to perform in-progress transfers.
  *
- * Returns true if the card is ready to accept commands.
+ * Returns true if the card is ready to accept new commands.
  */
 bool sdcard_poll();
 
@@ -82,6 +82,8 @@ bool sdcard_poll();
  * The multi-block write will be aborted automatically when writing to a non-consecutive address, or by performing a
  * read. You can abort it manually by calling sdcard_endWriteBlocks().
  *
+ * If you don't want to implement this feature, remove the define AFATFS_MIN_MULTIPLE_BLOCK_WRITE_COUNT in asyncfatfs.c.
+ *
  * Returns:
  *     SDCARD_OPERATION_SUCCESS     - Multi-block write has been queued
  *     SDCARD_OPERATION_BUSY        - The card is already busy and cannot accept your write
@@ -92,10 +94,15 @@ sdcardOperationStatus_e sdcard_beginWriteBlocks(uint32_t blockIndex, uint32_t bl
 /**
  * Abort a multiple-block write early (before all the `blockCount` blocks had been written).
  *
+ * If you don't want to implement this feature, remove the define AFATFS_MIN_MULTIPLE_BLOCK_WRITE_COUNT in asyncfatfs.c.
+ *
  * Returns:
  *     SDCARD_OPERATION_SUCCESS     - Multi-block write has been cancelled, or no multi-block write was in progress.
  *     SDCARD_OPERATION_BUSY        - The card is busy with another operation and could not cancel the multi-block write.
  */
 sdcardOperationStatus_e sdcard_endWriteBlocks();
 
+/**
+ * Only required to be provided when using AFATFS_USE_INTROSPECTIVE_LOGGING.
+ */
 void sdcard_setProfilerCallback(sdcard_profilerCallback_c callback);
