@@ -182,9 +182,10 @@ bool continueSpaceReclaimTest(bool start)
             afatfs_fopen("test.txt", "w+", spaceReclaimTestFileCreatedForEmpty);
         break;
         case SPACE_RECLAIM_TEST_STAGE_EMPTY_DELETE:
-            if (afatfs_funlink(testFile, spaceReclaimTestFileEmptyDeleted)) {
-                // Wait for the unlink to complete
-                reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_IDLE;
+            reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_IDLE;
+            if (!afatfs_funlink(testFile, spaceReclaimTestFileEmptyDeleted)) {
+                // retry later
+                reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_EMPTY_DELETE;
             }
         break;
         case SPACE_RECLAIM_TEST_STAGE_SOLID_APPEND_INIT:
@@ -204,9 +205,10 @@ bool continueSpaceReclaimTest(bool start)
             }
         break;
         case SPACE_RECLAIM_TEST_STAGE_SOLID_APPEND_DELETE:
-            if (afatfs_funlink(testFile, spaceReclaimTestFileSolidAppendDeleted)) {
-                // Wait for the unlink to complete
-                reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_IDLE;
+            reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_IDLE;
+            if (!afatfs_funlink(testFile, spaceReclaimTestFileSolidAppendDeleted)) {
+                // retry later
+                reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_SOLID_APPEND_DELETE;
             }
         break;
         case SPACE_RECLAIM_TEST_STAGE_APPEND_INIT:
@@ -226,9 +228,10 @@ bool continueSpaceReclaimTest(bool start)
             }
         break;
         case SPACE_RECLAIM_TEST_STAGE_APPEND_DELETE:
-            if (afatfs_funlink(testFile, spaceReclaimTestFileAppendDeleted)) {
-                // Wait for the unlink to complete
-                reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_IDLE;
+            reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_IDLE;
+            if (!afatfs_funlink(testFile, spaceReclaimTestFileAppendDeleted)) {
+                // retry later
+                reclaimTestStage = SPACE_RECLAIM_TEST_STAGE_APPEND_DELETE;
             }
         break;
         case SPACE_RECLAIM_TEST_STAGE_IDLE:
@@ -392,8 +395,11 @@ bool continueSpaceRetainTest(bool start, const char *fileMode)
         break;
         case SPACE_RETAIN_TEST_STAGE_UNLINK_B:
             if (afatfs_funlink(retainTestFileB, retainTestFileBDeleted)) {
-                retainTestFileB = NULL;
-                retainTestStage = SPACE_RETAIN_TEST_STAGE_IDLE;
+                // need to check state again in case callback has already been triggered
+                if (retainTestStage == SPACE_RETAIN_TEST_STAGE_UNLINK_B) {
+                    retainTestFileB = NULL;
+                    retainTestStage = SPACE_RETAIN_TEST_STAGE_IDLE;
+                }
             }
         break;
         case SPACE_RETAIN_TEST_STAGE_VERIFY_A_OPEN:
@@ -506,7 +512,7 @@ int main(int argc, char **argv)
     bool keepGoing = true;
 
     while (keepGoing) {
-        afatfs_poll();
+        testPoll();
 
         switch (afatfs_getFilesystemState()) {
             case AFATFS_FILESYSTEM_STATE_READY:
@@ -524,6 +530,7 @@ int main(int argc, char **argv)
     }
 
     while (!afatfs_destroy(false)) {
+        testPoll();
     }
 
     sdcard_sim_destroy();

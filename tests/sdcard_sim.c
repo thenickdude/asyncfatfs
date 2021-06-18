@@ -80,6 +80,8 @@ static void sdcard_continueReadBlock()
     if (--sdcard.currentOperation.countdownTimer <= 0) {
         uint64_t byteIndex = (uint64_t) sdcard.currentOperation.blockIndex * SDCARD_SIM_BLOCK_SIZE;
 
+        sdcard.state = SDCARD_STATE_READY;
+
         fseeko(simFile, byteIndex, SEEK_SET);
 
         if (fread(sdcard.currentOperation.buffer, sizeof(uint8_t), SDCARD_SIM_BLOCK_SIZE, simFile) == SDCARD_SIM_BLOCK_SIZE) {
@@ -93,8 +95,6 @@ static void sdcard_continueReadBlock()
             fprintf(stderr, "SDCardSim: fread failed on underlying file\n");
             exit(-1);
         }
-
-        sdcard.state = SDCARD_STATE_READY;
     }
 }
 
