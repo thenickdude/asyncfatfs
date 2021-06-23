@@ -1,4 +1,5 @@
 #include "common.h"
+#include "sdcard.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -64,4 +65,15 @@ void testAssert(bool condition, const char *errorMessage)
         fprintf(stderr, "%s\n", errorMessage);
         exit(-1);
     }
+}
+
+void testPoll()
+{
+#ifdef AFATFS_ASYNC_IO
+    // Let's reuse the sdcard_poll() function for asynchronous I/O mode, even if it's not strictly necessary.
+    // It could as well be implemented as a separate worker thread.
+    sdcard_poll();
+#else
+    afatfs_poll();
+#endif
 }

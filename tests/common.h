@@ -7,4 +7,6 @@ bool validateLogTestEntries(afatfsFilePtr_t file, uint32_t *entryIndex, uint32_t
 
 void testAssert(bool condition, const char *errorMessage);
 
+void testPoll();
+
 #define TEST_LOG_ENTRY_SIZE 16

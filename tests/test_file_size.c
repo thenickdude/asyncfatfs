@@ -57,7 +57,7 @@ static void initFilesystem()
     afatfs_init();
 
     while (afatfs_getFilesystemState() != AFATFS_FILESYSTEM_STATE_READY) {
-        afatfs_poll();
+        testPoll();
 
         if (afatfs_getFilesystemState() == AFATFS_FILESYSTEM_STATE_FATAL) {
             fprintf(stderr, "[Fail]     Fatal filesystem error during init\n");
@@ -252,7 +252,7 @@ int main(int argc, char **argv)
     bool keepGoing = true;
 
     while (keepGoing) {
-        afatfs_poll();
+        testPoll();
 
         switch (afatfs_getFilesystemState()) {
             case AFATFS_FILESYSTEM_STATE_READY:
@@ -270,6 +270,7 @@ int main(int argc, char **argv)
     }
 
     while (!afatfs_destroy(false)) {
+        testPoll();
     }
 
     sdcard_sim_destroy();

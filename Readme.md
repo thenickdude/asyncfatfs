@@ -75,3 +75,19 @@ Cleanflight / Betaflight's "blackbox" logging system: [filesystem consumer code]
 You'll notice that since most filesystem operations will fail and ask you to retry when the card is busy, it becomes 
 natural to call it using a state-machine from your app's main loop - where you only advance to the next state once the 
 current operation succeeds, calling afatfs_poll() in-between so that the filesystem can complete its queued tasks.
+
+### Asynchronous I/O
+
+There is experimental support for removing the need to call `afatfs_poll()` and to remove the `sdcard_poll()`
+primitive. This feature can be activated by compiling AsyncFatFS with the "AFATFS_ASYNC_IO" flag. When this flag is
+set, `afatfs_poll()` will be called internally from the callback function provided to `sdcard_readBlock()` and
+`sdcard_writeBlock()`. AsyncFatFS will no longer call `sdcard_poll()` if this is enabled.
+
+It is **strongly recommended** that `sdcard_readBlock()` and `sdcard_writeBlock()` implement some kind of scheduling
+and never call the provided callback directly. Since the callback functions themselves will call `afatfs_poll()`
+internally (in this mode), another call to any of the SD card primitives might be triggered. This will lead to
+AsyncFatFS performing an unbounded amount of work (particularly at card init when writing the freefile) and using an
+unbounded amount of stack size. If you have an infinite stack, then please go ahead. If not, then make sure that you
+use the callbacks further up the stack, e.g. from your main loop.
+
+Similarly, it is important that you update any internal state variables *before* you use any callback.
