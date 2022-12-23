@@ -33,6 +33,10 @@
 #define FAT_MAKE_DATE(year, month, day)     (day | (month << 5) | ((year - 1980) << 9))
 #define FAT_MAKE_TIME(hour, minute, second) ((second / 2) | (minute << 5) | (hour << 11))
 
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
 typedef enum {
     FAT_FILESYSTEM_TYPE_INVALID,
     FAT_FILESYSTEM_TYPE_FAT12,
@@ -121,3 +125,8 @@ bool fat_isDirectoryEntryTerminator(fatDirectoryEntry_t *entry);
 bool fat_isDirectoryEntryEmpty(fatDirectoryEntry_t *entry);
 
 void fat_convertFilenameToFATStyle(const char *filename, uint8_t *fatFilename);
+
+#if defined(__cplusplus)
+}
+#endif
+

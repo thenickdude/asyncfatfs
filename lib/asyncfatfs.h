@@ -5,6 +5,10 @@
 
 #include "fat_standard.h"
 
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
 typedef struct afatfsFile_t *afatfsFilePtr_t;
 
 typedef enum {
@@ -73,3 +77,8 @@ bool afatfs_isFull();
 
 afatfsFilesystemState_e afatfs_getFilesystemState();
 afatfsError_e afatfs_getLastError();
+
+#if defined(__cplusplus)
+}
+#endif
+

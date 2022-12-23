@@ -3,6 +3,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
 typedef struct sdcard_metadata_t {
     uint8_t manufacturerID;
     uint16_t oemID;
@@ -106,3 +110,8 @@ sdcardOperationStatus_e sdcard_endWriteBlocks();
  * Only required to be provided when using AFATFS_USE_INTROSPECTIVE_LOGGING.
  */
 void sdcard_setProfilerCallback(sdcard_profilerCallback_c callback);
+
+#if defined(__cplusplus)
+}
+#endif
+
