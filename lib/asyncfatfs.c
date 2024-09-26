@@ -490,6 +490,10 @@ static afatfs_t afatfs;
 static void afatfs_fileOperationContinue(afatfsFile_t *file);
 static uint8_t* afatfs_fileLockCursorSectorForWrite(afatfsFilePtr_t file);
 static uint8_t* afatfs_fileRetainCursorSectorForRead(afatfsFilePtr_t file);
+static void afatfs_fileOperationsPoll();
+#ifdef AFATFS_ASYNC_IO
+static void afatfs_poll();
+#endif
 
 static uint32_t roundUpTo(uint32_t value, uint32_t rounding)
 {
@@ -639,6 +643,9 @@ static void afatfs_sdcardReadComplete(sdcardBlockOperation_e operation, uint32_t
             break;
         }
     }
+#ifdef AFATFS_ASYNC_IO
+    afatfs_poll();
+#endif
 }
 
 /**
@@ -670,6 +677,9 @@ static void afatfs_sdcardWriteComplete(sdcardBlockOperation_e operation, uint32_
             break;
         }
     }
+#ifdef AFATFS_ASYNC_IO
+    afatfs_poll();
+#endif
 }
 
 /**
@@ -904,6 +914,7 @@ static afatfsOperationStatus_e afatfs_cacheSector(uint32_t physicalSectorIndex, 
 
     if (cacheSectorIndex == -1) {
         // We don't have enough free cache to service this request right now, try again later
+        afatfs_flush();
         return AFATFS_OPERATION_IN_PROGRESS;
     }
 
@@ -1454,7 +1465,7 @@ static afatfsOperationStatus_e afatfs_saveDirectoryEntry(afatfsFilePtr_t file, a
                    entry->fileSize = file->physicalSize;
                break;
                case AFATFS_SAVE_DIRECTORY_DELETED:
-                   entry->filename[0] = FAT_DELETED_FILE_MARKER;
+                   entry->filename[0] = (char)FAT_DELETED_FILE_MARKER;
                    //Fall through
 
                case AFATFS_SAVE_DIRECTORY_FOR_CLOSE:
@@ -1559,6 +1570,9 @@ static afatfsOperationStatus_e afatfs_appendRegularFreeClusterContinue(afatfsFil
             if (file->operation.operation == AFATFS_FILE_OPERATION_APPEND_FREE_CLUSTER) {
                 file->operation.operation = AFATFS_FILE_OPERATION_NONE;
             }
+
+            // flush any pending writes
+            afatfs_flush();
 
             return AFATFS_OPERATION_SUCCESS;
         break;
@@ -2053,7 +2067,13 @@ static afatfsOperationStatus_e afatfs_fseekInternal(afatfsFilePtr_t file, uint32
         opState->callback = callback;
         opState->seekOffset = offset;
 
-        return AFATFS_OPERATION_IN_PROGRESS;
+        // Do an initial round of processing
+        if (afatfs_fseekInternalContinue(file)) {
+            return AFATFS_OPERATION_SUCCESS;
+        }
+        else {
+            return AFATFS_OPERATION_IN_PROGRESS;
+        }
     }
 }
 
@@ -2260,6 +2280,9 @@ static afatfsOperationStatus_e afatfs_extendSubdirectoryContinue(afatfsFile_t *d
             if (opState->callback) {
                 opState->callback(directory);
             }
+
+            // flush any pending writes
+            afatfs_flush();
 
             return AFATFS_OPERATION_SUCCESS;
         break;
@@ -2474,6 +2497,9 @@ static afatfsOperationStatus_e afatfs_ftruncateContinue(afatfsFilePtr_t file, bo
                 opState->callback(file);
             }
 
+            // flush any pending writes
+            afatfs_flush();
+
             return AFATFS_OPERATION_SUCCESS;
         break;
     }
@@ -2490,7 +2516,7 @@ static afatfsOperationStatus_e afatfs_ftruncateContinue(afatfsFilePtr_t file, bo
  *
  * Returns true if the operation was successfully queued or false if the file is busy (try again later).
  *
- * The callback is called once the file has been truncated (some time after this routine returns).
+ * The callback is called once the file has been truncated, which MAY occur before this routine returns.
  */
 bool afatfs_ftruncate(afatfsFilePtr_t file, afatfsFileCallback_t callback)
 {
@@ -2676,6 +2702,9 @@ static void afatfs_createFileContinue(afatfsFile_t *file)
                 }
             }
 
+            // flush any pending writes
+            afatfs_flush();
+
             file->operation.operation = AFATFS_FILE_OPERATION_NONE;
             opState->callback(file);
         break;
@@ -2713,8 +2742,10 @@ static void afatfs_funlinkContinue(afatfsFilePtr_t file)
 /**
  * Delete and close the file.
  *
- * Returns true if the operation was successfully queued (callback will be called some time after this routine returns)
+ * Returns true if the operation was successfully completed or queued,
  * or false if the file is busy and you should try again later.
+ *
+ * If provided, the callback will be called after the operation completes (pass NULL for no callback).
  */
 bool afatfs_funlink(afatfsFilePtr_t file, afatfsCallback_t callback)
 {
@@ -2740,6 +2771,9 @@ bool afatfs_funlink(afatfsFilePtr_t file, afatfsCallback_t callback)
     opState->callback = callback;
 
     file->operation.operation = AFATFS_FILE_OPERATION_UNLINK;
+
+    // Start the unlink operation before returning
+    afatfs_funlinkContinue(file);
 
     return true;
 }
@@ -2793,6 +2827,11 @@ static afatfsFilePtr_t afatfs_createFile(afatfsFilePtr_t file, const char *name,
     }
 
     afatfs_createFileContinue(file);
+
+    if (file->operation.operation != AFATFS_FILE_OPERATION_CREATE_FILE && file->operation.operation != AFATFS_FILE_OPERATION_NONE) {
+        // file operation changed - process it
+        afatfs_fileOperationsPoll();
+    }
 
     return file;
 }
@@ -3393,6 +3432,7 @@ static void afatfs_initContinue()
                     afatfs_chdir(NULL);
 
                     afatfs.initPhase++;
+                    goto doMore;
                 } else {
                     afatfs.lastError = AFATFS_ERROR_BAD_FILESYSTEM_HEADER;
                     afatfs.filesystemState = AFATFS_FILESYSTEM_STATE_FATAL;
@@ -3406,9 +3446,20 @@ static void afatfs_initContinue()
 
             afatfs_createFile(&afatfs.freeFile, AFATFS_FREESPACE_FILENAME, FAT_FILE_ATTRIBUTE_SYSTEM | FAT_FILE_ATTRIBUTE_READ_ONLY,
                 AFATFS_FILE_MODE_CREATE | AFATFS_FILE_MODE_RETAIN_DIRECTORY, afatfs_freeFileCreated);
+            // Check if our callback was called before we could return
+            if (afatfs.filesystemState != AFATFS_FILESYSTEM_STATE_FATAL
+                && afatfs.initPhase != AFATFS_INITIALIZATION_FREEFILE_CREATING
+            ) {
+                goto doMore;
+            }
         break;
         case AFATFS_INITIALIZATION_FREEFILE_CREATING:
             afatfs_fileOperationContinue(&afatfs.freeFile);
+            if (afatfs.filesystemState != AFATFS_FILESYSTEM_STATE_FATAL
+                && afatfs.initPhase != AFATFS_INITIALIZATION_FREEFILE_CREATING
+            ) {
+                goto doMore;
+            }
         break;
         case AFATFS_INITIALIZATION_FREEFILE_FAT_SEARCH:
             if (afatfs_findLargestContiguousFreeBlockContinue() == AFATFS_OPERATION_SUCCESS) {
@@ -3490,16 +3541,26 @@ static void afatfs_initContinue()
     }
 }
 
+static bool afatfs_continue()
+{
+    bool cont = true;
+#ifndef AFATFS_ASYNC_IO
+    cont = sdcard_poll();
+#endif
+    return cont ? afatfs_flush() : false;
+}
+
 /**
  * Check to see if there are any pending operations on the filesystem and perform a little work (without waiting on the
- * sdcard). You must call this periodically.
+ * sdcard).
  */
+#ifdef AFATFS_ASYNC_IO
+static
+#endif
 void afatfs_poll()
 {
     // Only attempt to continue FS operations if the card is present & ready, otherwise we would just be wasting time
-    if (sdcard_poll()) {
-        afatfs_flush();
-
+    if (afatfs_continue()) {
         switch (afatfs.filesystemState) {
             case AFATFS_FILESYSTEM_STATE_INITIALIZATION:
                 afatfs_initContinue();
@@ -3576,6 +3637,8 @@ void afatfs_init()
 #ifdef AFATFS_USE_INTROSPECTIVE_LOGGING
     sdcard_setProfilerCallback(afatfs_sdcardProfilerCallback);
 #endif
+
+    afatfs_poll();
 }
 
 /**

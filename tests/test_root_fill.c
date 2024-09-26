@@ -134,7 +134,7 @@ int main(int argc, char **argv)
     bool keepGoing = true;
 
     while (keepGoing) {
-        afatfs_poll();
+        testPoll();
 
         switch (afatfs_getFilesystemState()) {
             case AFATFS_FILESYSTEM_STATE_READY:
@@ -152,6 +152,7 @@ int main(int argc, char **argv)
     }
 
     while (!afatfs_destroy(false)) {
+        testPoll();
     }
 
     sdcard_sim_destroy();
